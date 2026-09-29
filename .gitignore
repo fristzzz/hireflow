@@ -17,3 +17,6 @@ data/derived/*
 *.db
 .DS_Store
 .omo/
+.codegraph
+luozhenyu.md
+research/

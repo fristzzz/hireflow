@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     max_resumes_per_job: int = 200
     model_timeout_seconds: float = 120
     model_max_retries: int = 2
+    imap_host: str | None = None
+    imap_port: int = 993
+    imap_user: str | None = None
+    imap_password: str | None = None
+    imap_mailbox: str = "INBOX"
+    imap_poll_seconds: int = 300
+
+    @property
+    def imap_enabled(self) -> bool:
+        return bool(self.imap_host and self.imap_user and self.imap_password)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

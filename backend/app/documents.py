@@ -68,9 +68,11 @@ class DocumentProcessor:
         embedded_pages = await asyncio.to_thread(self._extract_pdf_text_pages, path)
         rendered_pages: list[bytes] | None = None
         extracted: list[str] = []
+        signal_seen = False
         for index, embedded_text in enumerate(embedded_pages, 1):
             if self._has_usable_embedded_text(embedded_text):
                 page_text = embedded_text
+                signal_seen = signal_seen or bool(self._resume_signal.search(page_text))
             else:
                 if rendered_pages is None:
                     rendered_pages = await asyncio.to_thread(self._render_pdf_pages, path)
@@ -84,11 +86,16 @@ class DocumentProcessor:
                         raise DocumentError(
                             f"第 {index} 页视觉识别和本地 OCR 均失败：{vision_error}; {ocr_error}"
                         ) from ocr_error
-                if not self._has_usable_extracted_text(page_text):
-                    raise DocumentError(
-                        f"第 {index} 页扫描件 OCR 文本质量不足，请改用文本型 PDF 或人工修正"
-                    )
-            extracted.append(f"[第 {index} 页]\n{page_text.strip()}")
+                if page_text.strip():
+                    usable, signal_seen = self._has_usable_extracted_text_page(page_text, signal_seen)
+                    if not usable:
+                        raise DocumentError(
+                            f"第 {index} 页扫描件 OCR 文本质量不足，请改用文本型 PDF 或人工修正"
+                        )
+                else:
+                    page_text = ""
+            if page_text.strip():
+                extracted.append(f"[第 {index} 页]\n{page_text.strip()}")
         text = "\n\n".join(extracted).strip()
         if not text:
             raise DocumentError("PDF 中没有识别到文本")
@@ -103,13 +110,30 @@ class DocumentProcessor:
                 raise DocumentError("暂不支持加密 PDF")
             return [page.get_text("text", sort=True).strip() for page in pdf]
 
-    @staticmethod
-    def _has_usable_embedded_text(text: str) -> bool:
-        """过滤空白、图片占位和明显损坏的短文本层。"""
+    @classmethod
+    def _is_watermark_or_hash_layer(cls, text: str) -> bool:
+        """识别平台防伪溯源码（如 BOSS 直聘的水印 hash：少量超长随机字符串）。"""
+
+        words = [w.strip("~_=-") for w in text.split() if any(c.isalnum() for c in w)]
+        if not words:
+            return False
+        has_hash_token = any(len(w) >= 30 for w in words)
+        has_few_words = len(set(words)) <= 3
+        return has_hash_token and has_few_words
+
+    @classmethod
+    def _has_usable_embedded_text(cls, text: str) -> bool:
+        """过滤空白、图片占位、水印溯源码和明显损坏的短文本层。"""
 
         meaningful_characters = sum(character.isalnum() for character in text)
         replacement_characters = text.count("\ufffd")
-        return meaningful_characters >= 20 and replacement_characters <= max(1, meaningful_characters // 50)
+        if meaningful_characters < 20 or replacement_characters > max(1, meaningful_characters // 50):
+            return False
+
+        if cls._is_watermark_or_hash_layer(text):
+            return False
+
+        return True
 
     _resume_signal = re.compile(
         r"(工作|经历|教育|项目|技能|求职|本科|硕士|邮箱|电话|经验|Resume|Experience|Education)",
@@ -117,16 +141,24 @@ class DocumentProcessor:
     )
 
     @classmethod
-    def _has_usable_extracted_text(cls, text: str) -> bool:
+    def _has_usable_extracted_text_page(cls, text: str, signal_seen: bool) -> tuple[bool, bool]:
         """过滤 OCR 乱码：需要足够中文或英文，并出现简历常见信号。"""
 
         stripped = (text or "").strip()
         if len(stripped) < 12:
-            return False
+            return False, signal_seen
         cjk = sum("\u4e00" <= character <= "\u9fff" for character in stripped)
-        if not cls._resume_signal.search(stripped):
-            return False
-        return cjk >= 8 or (len(stripped) >= 80 and sum(character.isascii() and character.isalpha() for character in stripped) >= 30)
+        has_signal = bool(cls._resume_signal.search(stripped))
+        updated_signal_seen = signal_seen or has_signal
+        if not updated_signal_seen and cjk < 30:
+            return False, updated_signal_seen
+        usable = cjk >= 8 or (len(stripped) >= 80 and sum(character.isascii() and character.isalpha() for character in stripped) >= 30)
+        return usable, updated_signal_seen
+
+    @classmethod
+    def _has_usable_extracted_text(cls, text: str) -> bool:
+        usable, _ = cls._has_usable_extracted_text_page(text, signal_seen=False)
+        return usable
 
     def _render_pdf_pages(self, path: Path) -> list[bytes]:
         pages: list[bytes] = []
@@ -183,7 +215,15 @@ class DocumentProcessor:
     def _extract_page_with_ocr(image_bytes: bytes) -> str:
         return pytesseract.image_to_string(Image.open(BytesIO(image_bytes)), lang="chi_sim+eng")
 
-    def ingest(self, *, job_id: str, resume_id: str, filename: str, mime_type: str, content: bytes) -> IngestedDocument:
+    def ingest(
+        self,
+        *,
+        job_id: str | None,
+        resume_id: str,
+        filename: str,
+        mime_type: str,
+        content: bytes,
+    ) -> IngestedDocument:
         safe_name = Path(filename).name
         extension = Path(safe_name).suffix.lower()
         if extension not in self.allowed_extensions:
@@ -197,8 +237,10 @@ class DocumentProcessor:
         if extension == ".docx" and not content.startswith(b"PK"):
             raise DocumentError("文件扩展名为 DOCX，但内容不是有效 DOCX")
 
-        upload_dir = self.settings.uploads_dir / job_id
-        preview_dir = self.settings.derived_dir / job_id
+        # job_id 为空表示简历池简历，落盘到保留目录 pool
+        folder = job_id or "pool"
+        upload_dir = self.settings.uploads_dir / folder
+        preview_dir = self.settings.derived_dir / folder
         upload_dir.mkdir(parents=True, exist_ok=True)
         preview_dir.mkdir(parents=True, exist_ok=True)
         storage_path = upload_dir / f"{resume_id}{extension}"

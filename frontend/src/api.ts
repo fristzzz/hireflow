@@ -1,4 +1,4 @@
-import type { Evaluation, EvaluationPage, Job, Resume, Run, RunPage, TrashPage, TrashType } from "./types";
+import type { Evaluation, EvaluationPage, Job, JobPasteResult, PoolAssignResult, PoolPasteResult, PoolResume, Resume, Run, RunPage, ScoringKind, ScoringPreview, TrashPage, TrashType } from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -39,14 +39,23 @@ const json = (body: unknown): RequestInit => ({
 
 export const api = {
   health: () => request<{ status: string; model_configured: boolean; text_model: string; vision_model: string; vision_enabled: boolean }>("/api/health"),
+  previewScoring: (prompt: string) => request<ScoringPreview>("/api/scoring-preview", json({ prompt })),
   jobs: () => request<Job[]>("/api/jobs"),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
-  createJob: (payload: Pick<Job, "name" | "jd_text" | "prompt">) => request<Job>("/api/jobs", json(payload)),
-  updateJob: (id: string, payload: Partial<Pick<Job, "name" | "jd_text" | "prompt">>) =>
+  createJob: (payload: Pick<Job, "name" | "jd_text" | "prompt"> & { scoring_profile?: { name: string; weight: number; kind: ScoringKind }[] }) =>
+    request<Job>("/api/jobs", json(payload)),
+  updateJob: (id: string, payload: Partial<Pick<Job, "name" | "jd_text" | "prompt">> & { scoring_profile?: { name: string; weight: number; kind: ScoringKind }[] }) =>
     request<Job>(`/api/jobs/${id}`, { ...json(payload), method: "PATCH" }),
   deleteJob: (id: string) => request<void>(`/api/jobs/${id}`, { method: "DELETE" }),
   restoreJob: (id: string) => request<{ restored: boolean }>(`/api/trash/job/${id}/restore`, { method: "POST" }),
   resumes: (jobId: string) => request<Resume[]>(`/api/jobs/${jobId}/resumes`),
+  poolResumes: (scope: "pool" | "all" = "pool") => request<PoolResume[]>(`/api/pool/resumes?scope=${scope}`),
+  assignPool: (payload: { resume_ids: string[]; job_id: string; evaluate: boolean }) =>
+    request<PoolAssignResult>("/api/pool/assign", json(payload)),
+  pastePoolResume: (payload: { text: string; name?: string; confirm?: boolean }) =>
+    request<PoolPasteResult>("/api/pool/resumes/paste", json(payload)),
+  pasteJobResume: (jobId: string, payload: { text: string; name?: string; confirm?: boolean }) =>
+    request<JobPasteResult>(`/api/jobs/${jobId}/resumes/paste`, json(payload)),
   resumeText: (resumeId: string) => requestText(`/api/resumes/${resumeId}/text`),
   updateResume: (resumeId: string, payload: { display_name?: string; parsed_text?: string }) =>
     request<Resume>(`/api/resumes/${resumeId}`, { ...json(payload), method: "PATCH" }),
@@ -81,7 +90,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ evaluation_ids: evaluationIds, status }),
     }),
-  rescore: (evaluationIds: string[]) => request<Run>("/api/evaluations/rescore", json({ evaluation_ids: evaluationIds })),
+  rescore: (evaluationIds: string[], jobId?: string) => request<Run>("/api/evaluations/rescore", json({ evaluation_ids: evaluationIds, job_id: jobId })),
   deleteEvaluation: (id: string) => request<void>(`/api/evaluations/${id}`, { method: "DELETE" }),
   batchDeleteEvaluations: (evaluationIds: string[]) =>
     request<{ updated_count: number }>("/api/evaluations/delete", json({ evaluation_ids: evaluationIds })),

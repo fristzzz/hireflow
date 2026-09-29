@@ -18,7 +18,7 @@ class SequencedEvaluator:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def evaluate(self, *, jd_text: str, prompt: str, resume_text: str) -> EvaluationCard:
+    async def evaluate(self, *, jd_text: str, prompt: str, resume_text: str, scoring_profile=None) -> EvaluationCard:
         self.calls += 1
         score = 70 + self.calls
         return EvaluationCard.model_validate(
@@ -240,7 +240,7 @@ def test_cancel_run_stays_canceled_even_if_evaluator_finishes_late(tmp_path) -> 
             self.started = threading.Event()
             self.release = threading.Event()
 
-        async def evaluate(self, *, jd_text: str, prompt: str, resume_text: str):
+        async def evaluate(self, *, jd_text: str, prompt: str, resume_text: str, scoring_profile=None):
             self.started.set()
             while not self.release.is_set():
                 await asyncio.sleep(0.01)
@@ -295,3 +295,26 @@ def test_invalid_prompt_weights_rejected_on_create_run(tmp_path) -> None:
         assert job.status_code == 400
         assert "100" in job.json()["detail"]
 
+
+
+def test_rescore_for_another_job_preserves_source_result(tmp_path) -> None:
+    app = create_app(database_url=f"sqlite:///{tmp_path / 'test.db'}", data_dir=tmp_path / "data", evaluator=SequencedEvaluator())
+    with TestClient(app) as client:
+        job, resume = create_dossier(client)
+        run = client.post(f"/api/jobs/{job['id']}/runs", json={"resume_ids": [resume['id']]}).json()
+        wait_for_run(client, run['id'])
+        first = client.get(f"/api/jobs/{job['id']}/evaluations").json()['items'][0]
+        target = client.post('/api/jobs', json={'name': '质量架构师', 'jd_text': '测试架构', 'prompt': '关注测试能力'}).json()
+        for target_id in ['missing', target['id']]:
+            response = client.post('/api/evaluations/rescore', json={'evaluation_ids': [first['id']], 'job_id': target_id})
+            if target_id == 'missing':
+                assert response.status_code == 404
+                continue
+            assert response.status_code == 201
+            assert response.json()['job_id'] == target['id']
+            assert wait_for_run(client, response.json()['id'])['status'] == 'completed'
+        source = client.get(f"/api/jobs/{job['id']}/evaluations").json()['items']
+        assert [item['id'] for item in source] == [first['id']]
+        result = client.get(f"/api/jobs/{target['id']}/evaluations").json()['items'][0]
+        assert result['resume_id'] == resume['id']
+        assert result['result']['overall_score'] == 72

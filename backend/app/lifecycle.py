@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import shutil
 from typing import Literal
 
 from fastapi import HTTPException
@@ -85,19 +84,21 @@ def trash_evaluation(evaluation: Evaluation) -> None:
 
 
 def _repair_current_flags(resume: Resume) -> None:
-    """保证每份活跃简历最多一条 is_current。"""
+    """保证每份活跃简历在每个岗位最多一条 is_current。"""
 
-    active = [item for item in resume.evaluations if item.deleted_at is None]
-    currents = [item for item in active if item.is_current]
-    if len(currents) > 1:
-        currents.sort(key=lambda item: item.updated_at, reverse=True)
-        for extra in currents[1:]:
-            extra.is_current = False
-    elif not currents:
-        completed = [item for item in active if item.status == "completed"]
-        if completed:
-            completed.sort(key=lambda item: item.updated_at, reverse=True)
-            completed[0].is_current = True
+    job_ids = {item.job_id for item in resume.evaluations}
+    for job_id in job_ids:
+        active = [item for item in resume.evaluations if item.deleted_at is None and item.job_id == job_id]
+        currents = [item for item in active if item.is_current]
+        if len(currents) > 1:
+            currents.sort(key=lambda item: item.updated_at, reverse=True)
+            for extra in currents[1:]:
+                extra.is_current = False
+        elif not currents:
+            completed = [item for item in active if item.status == "completed"]
+            if completed:
+                completed.sort(key=lambda item: item.updated_at, reverse=True)
+                completed[0].is_current = True
 
 
 def restore_job(job: Job) -> None:
@@ -113,12 +114,12 @@ def restore_job(job: Job) -> None:
         for evaluation in run.evaluations:
             if evaluation.deleted_at is not None:
                 restore_from_trash(evaluation)
-    for resume in job.resumes:
+    for resume in {item.resume for run in job.runs for item in run.evaluations} | set(job.resumes):
         _repair_current_flags(resume)
 
 
 def restore_resume(session: Session, resume: Resume) -> None:
-    if resume.job.deleted_at is not None:
+    if resume.job_id is not None and resume.job is not None and resume.job.deleted_at is not None:
         raise HTTPException(status_code=409, detail="请先恢复所属岗位")
     restore_from_trash(resume)
     for evaluation in resume.evaluations:
@@ -143,6 +144,7 @@ def restore_evaluation(session: Session, evaluation: Evaluation) -> None:
     current = session.scalar(
         select(Evaluation).where(
             Evaluation.resume_id == evaluation.resume_id,
+            Evaluation.job_id == evaluation.job_id,
             Evaluation.id != evaluation.id,
             Evaluation.is_current.is_(True),
             Evaluation.deleted_at.is_(None),
@@ -164,7 +166,7 @@ def is_top_level_trash_item(item_type: TrashType, item: Job | Resume | Screening
     if item_type == "resume":
         resume = item
         assert isinstance(resume, Resume)
-        return resume.job.deleted_at is None
+        return resume.job is None or resume.job.deleted_at is None
     if item_type == "run":
         run = item
         assert isinstance(run, ScreeningRun)
@@ -189,8 +191,8 @@ def purge_item(
     if item_type == "job":
         job = item
         assert isinstance(job, Job)
-        shutil.rmtree(settings.uploads_dir / job.id, ignore_errors=True)
-        shutil.rmtree(settings.derived_dir / job.id, ignore_errors=True)
+        for resume in job.resumes:
+            delete_resume_files(resume)
     elif item_type == "resume":
         resume = item
         assert isinstance(resume, Resume)

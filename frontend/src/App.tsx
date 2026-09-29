@@ -22,11 +22,13 @@ import {
   ChevronRight,
   CircleAlert,
   ClipboardList,
+  ClipboardPaste,
   Download,
   Ellipsis,
   FileText,
   FolderOpen,
   GraduationCap,
+  Inbox,
   ListFilter,
   LoaderCircle,
   Pencil,
@@ -42,7 +44,7 @@ import {
 } from "lucide-react";
 
 import { api } from "./api";
-import type { Evaluation, Job, Resume, Run, TrashItem, TrashType } from "./types";
+import type { Evaluation, Job, PoolPasteDuplicate, PoolResume, Resume, Run, ScoringDimension, ScoringKind, ScoringPreview, TrashItem, TrashType } from "./types";
 
 const reviewLabels: Record<Evaluation["review_status"], string> = {
   pending: "待复核",
@@ -140,16 +142,120 @@ function RowMenu({ label, children }: { label: string; children: (close: () => v
   return <div className="row-menu"><button type="button" className="icon-button compact" aria-label={label} aria-expanded={open} onClick={() => setOpen((value) => !value)}><Ellipsis /></button>{open && <><button className="menu-scrim" aria-label="关闭操作菜单" onClick={() => setOpen(false)} /><div className="action-popover" role="menu">{children(() => setOpen(false))}</div></>}</div>;
 }
 
+const scoringKindOptions: { value: ScoringKind; label: string }[] = [
+  { value: "core", label: "普通" },
+  { value: "knockout", label: "硬性 Must-have" },
+  { value: "bonus", label: "加分项" },
+];
+
+function scoringKindOf(item: ScoringDimension): ScoringKind {
+  return item.kind || (item.knockout ? "knockout" : "core");
+}
+
+function toScoringProfile(dimensions: ScoringDimension[]) {
+  return dimensions.map((item) => ({ name: item.name, weight: item.weight, kind: scoringKindOf(item) }));
+}
+
+function ScoringRubricEditor({
+  prompt,
+  initialDimensions = [],
+  onChange,
+}: {
+  prompt: string;
+  initialDimensions?: ScoringDimension[];
+  onChange?: (dimensions: ScoringDimension[]) => void;
+}) {
+  const [preview, setPreview] = useState<ScoringPreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dimensions, setDimensions] = useState<ScoringDimension[]>(initialDimensions);
+  const kindsRef = useRef<Record<string, ScoringKind>>(
+    Object.fromEntries(initialDimensions.map((item) => [item.name, scoringKindOf(item)])),
+  );
+  useEffect(() => {
+    if (!prompt.trim()) {
+      setPreview(null);
+      setError(null);
+      setDimensions([]);
+      onChange?.([]);
+      return;
+    }
+    let cancelled = false;
+    api.previewScoring(prompt).then((data) => {
+      if (cancelled) return;
+      const merged = data.dimensions.map((item) => {
+        const kind = kindsRef.current[item.name] || scoringKindOf(item);
+        kindsRef.current[item.name] = kind;
+        return { ...item, kind, knockout: kind === "knockout" };
+      });
+      setPreview(data);
+      setDimensions(merged);
+      setError(null);
+      onChange?.(merged);
+    }).catch((err: Error) => {
+      if (cancelled) return;
+      setPreview(null);
+      setDimensions([]);
+      setError(err.message);
+      onChange?.([]);
+    });
+    return () => { cancelled = true; };
+  }, [prompt]);
+  const setKind = (criterionId: string, kind: ScoringKind) => {
+    const next = dimensions.map((item) => {
+      if (item.criterion_id !== criterionId) return item;
+      kindsRef.current[item.name] = kind;
+      return { ...item, kind, knockout: kind === "knockout" };
+    });
+    setDimensions(next);
+    onChange?.(next);
+  };
+  if (!prompt.trim()) return null;
+  return (
+    <div className="scoring-preview">
+      <div className="scoring-preview-heading">
+        <strong>实际计分维度</strong>
+        {preview?.source === "default" && <small>未识别到评分标题或权重表，将使用默认 6 维，可在下面改硬性/加分</small>}
+        {preview?.source === "prompt" && <small>已从提示词编译。硬性与加分项可直接改，保存后生效</small>}
+      </div>
+      {error && <p className="scoring-preview-error">{error}</p>}
+      {dimensions.length > 0 && (
+        <ol>
+          {dimensions.map((item) => (
+            <li key={item.criterion_id}>
+              <span>{item.name}</span>
+              <select
+                aria-label={`${item.name}的计分性质`}
+                value={scoringKindOf(item)}
+                onChange={(event) => setKind(item.criterion_id, event.target.value as ScoringKind)}
+              >
+                {scoringKindOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <b>{item.weight} 分</b>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
 function CreateJobDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (job: Job) => void }) {
   const [name, setName] = useState("");
   const [jd, setJd] = useState("");
   const [prompt, setPrompt] = useState("");
-  const mutation = useMutation({ mutationFn: () => api.createJob({ name, jd_text: jd, prompt }), onSuccess: onCreated });
+  const [profile, setProfile] = useState<ScoringDimension[]>([]);
+  const mutation = useMutation({
+    mutationFn: () => api.createJob({ name, jd_text: jd, prompt, scoring_profile: toScoringProfile(profile) }),
+    onSuccess: onCreated,
+  });
   return <div className="modal-backdrop" role="presentation"><form className="modal dossier-form" role="dialog" aria-modal="true" onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}>
     <div className="modal-heading"><div><span className="eyebrow">NEW DOSSIER / 新案卷</span><h2>建立岗位筛选标准</h2></div><button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X /></button></div>
     <label>岗位名称<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：高级后端工程师" required /></label>
     <label>岗位 JD<textarea value={jd} onChange={(event) => setJd(event.target.value)} placeholder="粘贴完整岗位描述、职责与基本要求" rows={7} required /></label>
-    <label>筛选提示词<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="描述你关注的能力、硬性条件和评分偏好" rows={6} required /></label>
+    <label>筛选提示词<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="使用「## 1. 名称：XX分」或带权重列的表格。硬性 Must-have 与加分项请在下方量尺中修改。" rows={6} required /></label>
+    <ScoringRubricEditor prompt={prompt} onChange={setProfile} />
     <p className="privacy-note">系统会固定保存本次设置的版本。模型只提供证据与评分，最终决定始终由你完成。</p><ErrorNotice error={mutation.error} />
     <div className="modal-actions"><button type="button" className="button quiet" onClick={onClose}>取消</button><button className="button primary" disabled={mutation.isPending}>{mutation.isPending ? "创建中…" : "建立岗位案卷"}</button></div>
   </form></div>;
@@ -182,12 +288,50 @@ function ResumeTextDialog({ resume, onClose, onSaved }: { resume: Resume; onClos
   </section></div>;
 }
 
-function JobList({ onOpen, onTrash }: { onOpen: (id: string) => void; onTrash: () => void }) {
+type PasteSubmitPayload = { text: string; name?: string; confirm?: boolean };
+type PasteOutcome = { created: boolean; duplicates: PoolPasteDuplicate[] };
+
+function PasteResumeDialog({ submit, createdMessage, onClose, onCreated }: {
+  submit: (payload: PasteSubmitPayload) => Promise<PasteOutcome>;
+  createdMessage: string;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const notify = useNotify();
+  const [text, setText] = useState("");
+  const [name, setName] = useState("");
+  const [duplicates, setDuplicates] = useState<PoolPasteDuplicate[] | null>(null);
+  const mutation = useMutation({
+    mutationFn: (confirm: boolean) => submit({ text, name: name.trim() || undefined, confirm }),
+    onSuccess: (result) => {
+      if (!result.created) { setDuplicates(result.duplicates); return; }
+      notify(createdMessage);
+      onCreated();
+      onClose();
+    },
+  });
+  return <div className="modal-backdrop" role="presentation"><form className="modal dossier-form" role="dialog" aria-modal="true" aria-labelledby="paste-title" onSubmit={(event) => { event.preventDefault(); mutation.mutate(false); }}>
+    <div className="modal-heading"><div><span className="eyebrow">PASTE INTAKE / 粘贴录入</span><h2 id="paste-title">粘贴简历文本</h2></div><button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X /></button></div>
+    <label>简历文本<textarea autoFocus value={text} onChange={(event) => setText(event.target.value)} placeholder="粘贴简历全文；提交前会按姓名、邮箱与手机号在简历池中查重" rows={10} required /></label>
+    <label>姓名（选填）<input value={name} onChange={(event) => setName(event.target.value)} placeholder="留空则由系统自动提取" /></label>
+    {duplicates && <div className="paste-duplicates" role="alert">
+      <div className="cost-strip"><CircleAlert size={16} /><span>简历池中已有 {duplicates.length} 份疑似重复的简历，请确认是否为同一人。</span></div>
+      <ul>{duplicates.map((item) => <li key={item.id}><strong>{item.name}</strong><small>{item.source === "email" ? "邮箱收取" : item.source === "paste" ? "粘贴文本" : "手动上传"} · {dateLabel(item.created_at)} · 匹配：{item.matched_fields.join("、")}</small></li>)}</ul>
+    </div>}
+    <ErrorNotice error={mutation.error} />
+    {duplicates ? <div className="modal-actions"><button type="button" className="button quiet" onClick={() => setDuplicates(null)}>取消</button><button type="button" className="button primary" disabled={mutation.isPending} onClick={() => mutation.mutate(true)}>{mutation.isPending ? "录入中…" : "仍然录入"}</button></div>
+      : <div className="modal-actions"><button type="button" className="button quiet" onClick={onClose}>取消</button><button type="submit" className="button primary" disabled={!text.trim() || mutation.isPending}>{mutation.isPending ? "检查中…" : "确认录入"}</button></div>}
+  </form></div>;
+}
+
+function JobList({ onOpen, onTrash, onPool }: { onOpen: (id: string) => void; onTrash: () => void; onPool: () => void }) {
   const queryClient = useQueryClient();
   const { data: jobs = [], error, isLoading } = useQuery({ queryKey: ["jobs"], queryFn: api.jobs });
   const health = useQuery({ queryKey: ["health"], queryFn: api.health });
+  const pool = useQuery({ queryKey: ["pool", "pool"], queryFn: () => api.poolResumes() });
+  const poolNewCount = (pool.data || []).filter((item) => !item.evaluation).length;
   const [creating, setCreating] = useState(false);
-  return <main className="landing-shell"><header className="topbar"><div className="brand-mark"><span>HF</span></div><div className="brand-copy"><strong>HireFlow</strong><small>招聘筛选工作台</small></div><div className="topbar-actions"><button className="button quiet" type="button" aria-label="打开回收站" onClick={onTrash}><Trash2 size={15} />回收站</button><div className={`health-pill ${health.data?.model_configured ? "ready" : "warn"}`}><span />{health.data?.model_configured ? "模型已连接" : "待配置模型"}</div></div></header>
+  return <main className="landing-shell"><header className="topbar"><div className="brand-mark"><span>HF</span></div><div className="brand-copy"><strong>HireFlow</strong><small>招聘筛选工作台</small></div><div className="topbar-actions"><button className="button quiet" type="button" aria-label="打开简历池" onClick={onPool}><Inbox size={15} />简历池{poolNewCount > 0 && <span className="count-badge">{poolNewCount}</span>}</button><button className="button quiet" type="button" aria-label="打开回收站" onClick={onTrash}><Trash2 size={15} />回收站</button><div className={`health-pill ${health.data?.model_configured ? "ready" : "warn"}`}><span />{health.data?.model_configured ? "模型已连接" : "待配置模型"}</div></div></header>
     <section className="hero"><div><span className="eyebrow">RECRUITMENT INTELLIGENCE / 01</span><h1>把筛选依据<br />留在<span>案卷</span>里。</h1></div><div className="hero-aside"><p>同一标准审阅每一份简历，保留原文证据、当前版本和你的最终判断。</p><button className="button primary" onClick={() => setCreating(true)}><Plus size={17} />创建岗位</button></div></section>
     <section className="jobs-section"><div className="section-heading"><div><span className="section-index">A</span><h2>岗位案卷</h2></div><span>{jobs.length.toString().padStart(2, "0")} 份</span></div><ErrorNotice error={error} />
       {isLoading ? <div className="loading-block"><LoaderCircle className="spin" />正在调取案卷</div> : jobs.length === 0 ? <div className="empty-state"><FolderOpen /><h3>还没有岗位案卷</h3><p>先写下岗位 JD 和你的筛选标准，再放入候选人简历。</p><button className="button primary" onClick={() => setCreating(true)}>创建第一个岗位</button></div> : <div className="job-grid">{jobs.map((job, index) => <button className="job-card" key={job.id} onClick={() => onOpen(job.id)}><div className="job-number">{String(index + 1).padStart(2, "0")}</div><BriefcaseBusiness className="job-icon" /><div className="job-card-body"><span>{job.resume_count} 份简历 · {job.run_count} 次筛选</span><h3>{job.name}</h3><p>{job.jd_text}</p></div><div className="job-card-footer"><span>更新于 {dateLabel(job.updated_at)}</span><ChevronRight /></div></button>)}</div>}
@@ -206,6 +350,7 @@ export function ResumeDesk({ job, onRunCreated }: { job: Job; onRunCreated: (run
   const [rename, setRename] = useState<Resume | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Resume[] | null>(null);
   const [confirmReparse, setConfirmReparse] = useState<Resume | null>(null);
+  const [pasting, setPasting] = useState(false);
   const [search, setSearch] = useState("");
   const [formatFilter, setFormatFilter] = useState("all");
   const [parseFilter, setParseFilter] = useState("all");
@@ -222,7 +367,7 @@ export function ResumeDesk({ job, onRunCreated }: { job: Job; onRunCreated: (run
   const selectedResumes = resumes.filter((item) => selected.has(item.id));
   const totalPages = selectedResumes.reduce((sum, item) => sum + (item.page_count || 0), 0);
   const acceptFiles = (files: File[]) => { if (files.length) uploadMutation.mutate(files); };
-  return <section className="workspace-section"><div className="desk-heading"><div><span className="eyebrow">INPUT / 候选人材料</span><h2>简历材料</h2><p className="heading-note">原件、解析文本与筛选入口集中管理</p></div><div className="desk-actions"><input ref={inputRef} hidden type="file" multiple accept=".pdf,.docx" onChange={(event) => { if (event.target.files) acceptFiles([...event.target.files]); event.target.value = ""; }} /><button className="button quiet" onClick={() => inputRef.current?.click()} disabled={uploadMutation.isPending}><Upload size={16} />{uploadMutation.isPending ? "上传中…" : "上传简历"}</button><button className="button primary" disabled={!selected.size || runMutation.isPending} onClick={() => runMutation.mutate([...selected])}><Sparkles size={16} />筛选已选 {selected.size || ""}</button></div></div>
+  return <section className="workspace-section"><div className="desk-heading"><div><span className="eyebrow">INPUT / 候选人材料</span><h2>简历材料</h2><p className="heading-note">原件、解析文本与筛选入口集中管理</p></div><div className="desk-actions"><input ref={inputRef} hidden type="file" multiple accept=".pdf,.docx" onChange={(event) => { if (event.target.files) acceptFiles([...event.target.files]); event.target.value = ""; }} /><button className="button quiet" onClick={() => inputRef.current?.click()} disabled={uploadMutation.isPending}><Upload size={16} />{uploadMutation.isPending ? "上传中…" : "上传简历"}</button><button className="button quiet" type="button" onClick={() => setPasting(true)}><ClipboardPaste size={16} />粘贴文本</button><button className="button primary" disabled={!selected.size || runMutation.isPending} onClick={() => runMutation.mutate([...selected])}><Sparkles size={16} />筛选已选 {selected.size || ""}</button></div></div>
     {selected.size > 0 && <div className="bulk-toolbar"><strong>已选 {selected.size} 份材料</strong><button type="button" onClick={() => runMutation.mutate([...selected])}><Sparkles />筛选 / 重评</button><button type="button" onClick={() => setConfirmDelete(selectedResumes)}><Trash2 />移入回收站</button><button type="button" onClick={() => setSelected(new Set())}>取消选择</button></div>}
     {selected.size > 0 && <div className="cost-strip"><CircleAlert size={16} /><span>{health.data?.vision_enabled ? `本次将处理 ${selected.size} 份简历，其中 PDF 共 ${totalPages} 页；PDF 每页优先调用视觉模型。` : `本次将处理 ${selected.size} 份简历，其中 PDF 共 ${totalPages} 页；当前将使用本地文本/OCR。`}</span></div>}
     {uploadReport && <div className="success-note"><Check size={15} /><span>{uploadReport.message}</span>{uploadReport.recoverable && <button type="button" onClick={() => restoreMutation.mutate(uploadReport.recoverable!)}>恢复旧档案</button>}<button type="button" aria-label="关闭上传结果" onClick={() => setUploadReport(null)}><X size={14} /></button></div>}<ErrorNotice error={error || uploadMutation.error || runMutation.error || deleteMutation.error || reparseMutation.error} />
@@ -231,6 +376,7 @@ export function ResumeDesk({ job, onRunCreated }: { job: Job; onRunCreated: (run
       {shown.length === 0 ? <div className="filtered-empty"><Search /><strong>没有符合条件的简历</strong><span>调整关键词或分类条件后再试。</span></div> : <div className="resume-table"><div className="table-row table-head"><label><input type="checkbox" checked={allSelected} onChange={toggleAllShown} aria-label="选择当前筛选结果" /></label><span>文件</span><span>格式 / 大小</span><span>解析状态</span><span>上传时间</span><span>操作</span></div>{shown.map((resume) => { const name = resumeName(resume); return <div className="table-row" key={resume.id}><label><input type="checkbox" aria-label={`选择${name}`} checked={selected.has(resume.id)} onChange={() => setSelected((current) => { const next = new Set(current); next.has(resume.id) ? next.delete(resume.id) : next.add(resume.id); return next; })} /></label><div className="file-name"><FileText size={17} /><div><strong data-testid="resume-name">{name}</strong>{resume.parsed_text_source === "manual" && <small>人工修正文本</small>}</div></div><span>{resume.original_name.split(".").pop()?.toUpperCase()} · {sizeLabel(resume.size_bytes)}{resume.page_count ? ` · ${resume.page_count} 页` : ""}</span><span className={`status-dot ${resume.parse_status}`} title={resume.parse_error || undefined}>{resume.parse_status === "ready" ? "文本就绪" : resume.parse_status === "failed" ? "解析失败" : resume.parse_status === "parsing" ? "解析中" : "待解析"}</span><span>{dateLabel(resume.created_at)}</span><div className="row-actions">{resume.parse_status === "ready" && <button className="text-action" onClick={() => setTextPreview(resume)} aria-label={`查看${name}文本`}>查看文本</button>}<RowMenu label={`${name}更多操作`}>{(close) => <><a role="menuitem" href={`/api/resumes/${resume.id}/preview`} target="_blank" rel="noreferrer"><FileText />预览原件</a><button role="menuitem" onClick={() => { close(); setRename(resume); }}><Pencil />修改名称</button><button role="menuitem" onClick={() => { close(); setConfirmReparse(resume); }}><RefreshCw />重新解析</button><button role="menuitem" onClick={() => { close(); runMutation.mutate([resume.id]); }}><Sparkles />重新评分</button><button role="menuitem" className="danger-text" onClick={() => { close(); setConfirmDelete([resume]); }}><Trash2 />移入回收站</button></>}</RowMenu></div></div>; })}</div>}
     </>}
     {textPreview && <ResumeTextDialog resume={textPreview} onClose={() => setTextPreview(null)} onSaved={invalidate} />}{rename && <RenameResumeDialog resume={rename} onClose={() => setRename(null)} onSaved={invalidate} />}
+    {pasting && <PasteResumeDialog submit={(payload) => api.pasteJobResume(job.id, payload)} createdMessage="简历已录入，评分任务已启动" onClose={() => setPasting(false)} onCreated={() => { invalidate(); queryClient.invalidateQueries({ queryKey: ["runs", job.id] }); }} />}
     {confirmDelete && <ConfirmDialog title={confirmDelete.length > 1 ? `删除 ${confirmDelete.length} 份简历档案？` : `删除“${resumeName(confirmDelete[0])}”？`} description="原件、解析文本和关联筛选结果会一起移入回收站，30 天内可以恢复。" confirmLabel="移入回收站" danger busy={deleteMutation.isPending} onCancel={() => setConfirmDelete(null)} onConfirm={() => deleteMutation.mutate(confirmDelete)} />}
     {confirmReparse && <ConfirmDialog title={`重新解析“${resumeName(confirmReparse)}”？`} description={confirmReparse.parsed_text_source === "manual" ? "这会覆盖当前人工修正文本，覆盖后无法撤销。" : "系统会重新从原始文件提取文本。"} confirmLabel="开始重新解析" busy={reparseMutation.isPending} onCancel={() => setConfirmReparse(null)} onConfirm={() => reparseMutation.mutate(confirmReparse)} />}
   </section>;
@@ -258,7 +404,7 @@ export function EvaluationDetail({ evaluation, onClose }: { evaluation: Evaluati
   const resizeDetail = (event: ReactPointerEvent<HTMLDivElement>) => { event.preventDefault(); const bounds = detailContentRef.current?.getBoundingClientRect(); if (!bounds) return; const onMove = (moveEvent: PointerEvent) => setAnalysisWidth(Math.min(76, Math.max(28, ((moveEvent.clientX - bounds.left) / bounds.width) * 100))); const onEnd = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onEnd); }; document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none"; window.addEventListener("pointermove", onMove); window.addEventListener("pointerup", onEnd, { once: true }); };
   const resizePanel = (event: ReactPointerEvent<HTMLDivElement>) => { event.preventDefault(); const bounds = detailPanelRef.current?.getBoundingClientRect(); if (!bounds) return; const rightEdge = bounds.right; const onMove = (moveEvent: PointerEvent) => setPanelWidth(Math.min(window.innerWidth, Math.max(Math.min(720, window.innerWidth), rightEdge - moveEvent.clientX))); const onEnd = () => { document.body.style.cursor = ""; document.body.style.userSelect = ""; window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onEnd); }; document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none"; window.addEventListener("pointermove", onMove); window.addEventListener("pointerup", onEnd, { once: true }); };
   return <div className="detail-backdrop"><aside className="detail-panel" ref={detailPanelRef} style={{ width: `${panelWidth}px` }}><div className="panel-resizer" role="separator" aria-label="调整详情面板宽度" aria-orientation="vertical" aria-valuemin={Math.min(720, window.innerWidth)} aria-valuemax={window.innerWidth} aria-valuenow={Math.round(panelWidth)} tabIndex={0} onPointerDown={resizePanel} onKeyDown={(event) => { if (event.key === "ArrowLeft") setPanelWidth((value) => Math.min(window.innerWidth, value + 24)); if (event.key === "ArrowRight") setPanelWidth((value) => Math.max(Math.min(720, window.innerWidth), value - 24)); }}><span /></div><div className="detail-header"><div><span className="eyebrow">CANDIDATE REVIEW</span><h2>{candidateDisplayName(evaluation)}</h2><p>{result?.candidate.current_role || evaluation.resume_name}</p></div><button className="icon-button" onClick={onClose} aria-label="关闭详情"><X /></button></div>
-    <div className="detail-content" ref={detailContentRef} style={{ gridTemplateColumns: `${analysisWidth}% 9px minmax(0, 1fr)` }}><div className="assessment-column">{result ? <><div className={`score-card ${result.match_level}`}><div><span>综合匹配</span><strong>{result.overall_score}</strong><small>/ 100</small></div><p>{result.summary}</p></div><section className="dimension-section"><div className="dimension-heading"><div><span className="section-index">分</span><h3>维度评分</h3></div><small>{result.criteria.filter((item) => item.score != null).length} / {result.criteria.length} 已评分</small></div><div className="dimension-list">{result.criteria.map((criterion, index) => <div className="dimension-item" key={`${criterion.criterion}-${index}`}><div className="dimension-meta"><span>{String(index + 1).padStart(2, "0")}</span><strong>{criterion.criterion}</strong><div className={`dimension-score ${scoreBand(criterion.score)}`} aria-label={`${criterion.criterion}评分`}>{criterion.score == null ? <em>待重新评分</em> : <><b>{criterion.score}</b><small> / 100</small>{criterion.weight ? <span className="weighted-contribution">贡献 {criterion.weighted_score ?? 0} / {criterion.weight}</span> : null}</>}</div></div><div className="dimension-track"><span className={scoreBand(criterion.score)} style={{ width: `${criterion.score ?? 0}%` }} /></div></div>)}</div></section><section className="evidence-section"><h3>标准与证据</h3>{result.criteria.map((criterion, index) => <article className="criterion" key={`${criterion.criterion}-${index}`}><header><div className="criterion-title"><span className={`criterion-status ${criterion.status}`}>{({ met: "满足", partial: "部分", not_met: "不满足", unknown: "未知" } as const)[criterion.status]}</span><strong>{criterion.criterion}</strong></div><div className={`criterion-score ${scoreBand(criterion.score)}`}>{criterion.score == null ? "待重新评分" : <><b>{criterion.score}</b><small>/100{criterion.weight ? ` · 贡献 ${criterion.weighted_score ?? 0}/${criterion.weight}` : ""}</small></>}</div></header>{criterion.evidence.map((entry, idx) => <blockquote key={idx}>“{entry.text}”<cite>{entry.location}</cite></blockquote>)}</article>)}</section><div className="insight-grid"><section><h3>优势</h3><ul>{result.strengths.map((item) => <li key={item}>{item}</li>)}</ul></section><section><h3>缺口</h3><ul>{result.gaps.map((item) => <li key={item}>{item}</li>)}</ul></section></div>{result.risk_flags.length > 0 && <section className="risk-box"><h3>需核实</h3>{result.risk_flags.join("；")}</section>}<section className="questions"><h3>建议面试追问</h3><ol>{result.interview_questions.map((item) => <li key={item}>{item}</li>)}</ol></section></> : <div className="loading-block">{evaluation.error || "评估仍在进行"}</div>}</div><div className="detail-resizer" role="separator" aria-label="调整分析与简历宽度" aria-orientation="vertical" aria-valuemin={28} aria-valuemax={76} aria-valuenow={Math.round(analysisWidth)} tabIndex={0} onPointerDown={resizeDetail} onKeyDown={(event) => { if (event.key === "ArrowLeft") setAnalysisWidth((value) => Math.max(28, value - 2)); if (event.key === "ArrowRight") setAnalysisWidth((value) => Math.min(76, value + 2)); }}><span /></div><div className="document-column"><div className="preview-toolbar"><span>原始简历</span><div><a href={`/api/resumes/${evaluation.resume_id}/preview`} target="_blank" rel="noreferrer">新窗口</a><a href={`/api/resumes/${evaluation.resume_id}/original`}><Download size={15} />下载</a></div></div><iframe title="简历预览" src={`/api/resumes/${evaluation.resume_id}/preview`} /></div></div>
+    <div className="detail-content" ref={detailContentRef} style={{ gridTemplateColumns: `${analysisWidth}% 9px minmax(0, 1fr)` }}><div className="assessment-column">{result ? <><div className={`score-card ${result.match_level}`}><div><span>综合匹配</span><strong>{result.overall_score}</strong><small>/ 100</small></div><p>{result.summary}</p></div>{result.criteria.some((item) => item.knockout && item.status === "not_met") ? <p className="knockout-note">硬性项未满足，匹配等级已限制为低</p> : null}<section className="dimension-section"><div className="dimension-heading"><div><span className="section-index">分</span><h3>维度评分</h3></div><small>{result.criteria.filter((item) => item.score != null).length} / {result.criteria.length} 已评分</small></div><div className="dimension-list">{result.criteria.map((criterion, index) => <div className="dimension-item" key={`${criterion.criterion}-${index}`}><div className="dimension-meta"><span>{String(index + 1).padStart(2, "0")}</span><strong>{criterion.criterion}</strong>{criterion.knockout || criterion.kind === "knockout" ? <em className="knockout-tag">硬性</em> : criterion.kind === "bonus" ? <em className="knockout-tag">加分项</em> : null}<div className={`dimension-score ${scoreBand(criterion.score)}`} aria-label={`${criterion.criterion}评分`}>{criterion.score == null ? <em>待重新评分</em> : <><b>{criterion.score}</b><small> / 100</small>{criterion.weight ? <span className="weighted-contribution">贡献 {criterion.weighted_score ?? 0} / {criterion.weight}</span> : null}</>}</div></div><div className="dimension-track"><span className={scoreBand(criterion.score)} style={{ width: `${criterion.score ?? 0}%` }} /></div></div>)}</div></section><section className="evidence-section"><h3>标准与证据</h3>{result.criteria.map((criterion, index) => <article className="criterion" key={`${criterion.criterion}-${index}`}><header><div className="criterion-title"><span className={`criterion-status ${criterion.status}`}>{({ met: "满足", partial: "部分", not_met: "不满足", unknown: "未知" } as const)[criterion.status]}</span><strong>{criterion.criterion}</strong>{criterion.knockout || criterion.kind === "knockout" ? <em className="knockout-tag">硬性</em> : criterion.kind === "bonus" ? <em className="knockout-tag">加分项</em> : null}</div><div className={`criterion-score ${scoreBand(criterion.score)}`}>{criterion.score == null ? "待重新评分" : <><b>{criterion.score}</b><small>/100{criterion.weight ? ` · 贡献 ${criterion.weighted_score ?? 0}/${criterion.weight}` : ""}</small></>}</div></header>{criterion.evidence.map((entry, idx) => <blockquote key={idx}>“{entry.text}”<cite>{entry.location}</cite></blockquote>)}</article>)}</section><div className="insight-grid"><section><h3>优势</h3><ul>{result.strengths.map((item) => <li key={item}>{item}</li>)}</ul></section><section><h3>缺口</h3><ul>{result.gaps.map((item) => <li key={item}>{item}</li>)}</ul></section></div>{result.risk_flags.length > 0 && <section className="risk-box"><h3>需核实</h3>{result.risk_flags.join("；")}</section>}<section className="questions"><h3>建议面试追问</h3><ol>{result.interview_questions.map((item) => <li key={item}>{item}</li>)}</ol></section></> : <div className="loading-block">{evaluation.error || "评估仍在进行"}</div>}</div><div className="detail-resizer" role="separator" aria-label="调整分析与简历宽度" aria-orientation="vertical" aria-valuemin={28} aria-valuemax={76} aria-valuenow={Math.round(analysisWidth)} tabIndex={0} onPointerDown={resizeDetail} onKeyDown={(event) => { if (event.key === "ArrowLeft") setAnalysisWidth((value) => Math.max(28, value - 2)); if (event.key === "ArrowRight") setAnalysisWidth((value) => Math.min(76, value + 2)); }}><span /></div><div className="document-column"><div className="preview-toolbar"><span>原始简历</span><div><a href={`/api/resumes/${evaluation.resume_id}/preview`} target="_blank" rel="noreferrer">新窗口</a><a href={`/api/resumes/${evaluation.resume_id}/original`}><Download size={15} />下载</a></div></div><iframe title="简历预览" src={`/api/resumes/${evaluation.resume_id}/preview`} /></div></div>
     <footer className="review-bar"><div className="review-buttons">{(["pending", "advance", "hold", "reject"] as const).map((value) => <button key={value} className={status === value ? "active" : ""} onClick={() => setStatus(value)}>{reviewLabels[value]}</button>)}</div><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="写下招聘备注…" /><button className="button primary" onClick={() => mutation.mutate()} disabled={mutation.isPending}>{mutation.isPending ? "保存中" : "保存判断"}</button></footer></aside></div>;
 }
 
@@ -277,6 +423,8 @@ export function ResultsDesk({ jobId, initialRunId: _initialRunId }: { jobId: str
   const [pageSize, setPageSize] = useState(10);
   const [detail, setDetail] = useState<Evaluation | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [targetJob, setTargetJob] = useState("");
+  const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: selected.size > 0 });
   const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null);
   useEffect(() => { setPage(1); }, [deferredSearch, reviewFilter, matchFilter, runFilter, dateFrom, dateTo, sort, pageSize]);
   const queryParams = useMemo(() => { const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), search: deferredSearch.trim(), review_status: reviewFilter, match_level: matchFilter, run_status: runFilter, sort }); if (dateFrom) params.set("date_from", dateFrom); if (dateTo) params.set("date_to", dateTo); return params; }, [page, pageSize, deferredSearch, reviewFilter, matchFilter, runFilter, dateFrom, dateTo, sort]);
@@ -287,6 +435,15 @@ export function ResultsDesk({ jobId, initialRunId: _initialRunId }: { jobId: str
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["evaluations", jobId] });
   const reviewMutation = useMutation({ mutationFn: ({ ids, status }: { ids: string[]; status: Evaluation["review_status"] }) => api.batchReview(ids, status), onSuccess: () => { notify("所选候选人的人工状态已更新"); invalidate(); } });
   const rescoreMutation = useMutation({ mutationFn: (ids: string[]) => api.rescore(ids), onSuccess: () => { notify("重新评分任务已启动"); setSelected(new Set()); invalidate(); queryClient.invalidateQueries({ queryKey: ["runs", jobId] }); } });
+  const changeJobMutation = useMutation({
+    mutationFn: ({ ids, target }: { ids: string[]; target: string }) => api.rescore(ids, target),
+    onSuccess: (_run, { target }) => {
+      notify(`已启动「${jobs.data?.find((job) => job.id === target)?.name || "目标职位"}」重新评分，请在该职位的筛选结果查看`);
+      setSelected(new Set());
+      setTargetJob("");
+      for (const key of ["evaluations", "runs", "jobs", "job", "pool"]) queryClient.invalidateQueries({ queryKey: [key] });
+    },
+  });
   const deleteMutation = useMutation({ mutationFn: async (ids: string[]) => { if (ids.length === 1) await api.deleteEvaluation(ids[0]); else await api.batchDeleteEvaluations(ids); }, onSuccess: () => { notify("筛选结果已移入回收站"); setSelected(new Set()); setConfirmDelete(null); setDetail(null); invalidate(); } });
   const exportHref = (format: string) => { const params = new URLSearchParams({ format }); selectedIds.forEach((id) => params.append("evaluation_id", id)); return `/api/jobs/${jobId}/export?${params.toString()}`; };
   const allShownSelected = shown.length > 0 && shown.every((item) => selected.has(item.id));
@@ -294,10 +451,11 @@ export function ResultsDesk({ jobId, initialRunId: _initialRunId }: { jobId: str
   const totalPages = Math.max(1, data?.total_pages || 1);
   const pageNumbers = Array.from({ length: Math.min(5, totalPages) }, (_, index) => Math.max(1, Math.min(totalPages - 4, page - 2)) + index).filter((value) => value <= totalPages);
   return <section className="workspace-section results-desk"><div className="desk-heading"><div><span className="eyebrow">OUTPUT / 评估案卷</span><h2>筛选结果</h2><p className="heading-note">每份简历仅展示当前有效评分</p></div><div className="desk-actions"><div className="export-actions"><span><Download size={15} />{selected.size ? `导出已选 ${selected.size} 人` : "导出全部"}</span><a href={exportHref("xlsx")} aria-label="导出 Excel">XLSX</a><a href={exportHref("csv")} aria-label="导出 CSV">CSV</a><a href={exportHref("json")} aria-label="导出 JSON">JSON</a><a href={exportHref("md")} aria-label="导出 Markdown">MD</a><a href={exportHref("docx")} aria-label="导出 Word">DOCX</a></div></div></div>
-    {selected.size > 0 && <div className="bulk-toolbar results-bulk"><strong>已选 {selected.size} 人</strong><button aria-label="批量推进" type="button" onClick={() => reviewMutation.mutate({ ids: selectedIds, status: "advance" })}>推进</button><button type="button" onClick={() => reviewMutation.mutate({ ids: selectedIds, status: "hold" })}>保留</button><button type="button" onClick={() => reviewMutation.mutate({ ids: selectedIds, status: "reject" })}>淘汰</button><button type="button" onClick={() => reviewMutation.mutate({ ids: selectedIds, status: "pending" })}>恢复待定</button><button aria-label="批量重新评分" type="button" onClick={() => rescoreMutation.mutate(selectedIds)}><RefreshCw />重新评分</button><button aria-label="批量移入回收站" type="button" onClick={() => setConfirmDelete(selectedIds)}><Trash2 />删除</button><button type="button" onClick={() => setSelected(new Set())}>取消选择</button></div>}
+    {selected.size > 0 && <div className="bulk-toolbar results-bulk"><strong>已选 {selected.size} 人</strong><button aria-label="批量推进" type="button" onClick={() => reviewMutation.mutate({ ids: selectedIds, status: "advance" })}>推进</button><button type="button" onClick={() => reviewMutation.mutate({ ids: selectedIds, status: "hold" })}>保留</button><button type="button" onClick={() => reviewMutation.mutate({ ids: selectedIds, status: "reject" })}>淘汰</button><button type="button" onClick={() => reviewMutation.mutate({ ids: selectedIds, status: "pending" })}>恢复待定</button><button aria-label="批量重新评分" disabled={rescoreMutation.isPending || changeJobMutation.isPending} type="button" onClick={() => rescoreMutation.mutate(selectedIds)}><RefreshCw />重新评分</button><button aria-label="批量移入回收站" type="button" onClick={() => setConfirmDelete(selectedIds)}><Trash2 />删除</button><button type="button" onClick={() => setSelected(new Set())}>取消选择</button></div>}
+    {selected.size > 0 && <div className="bulk-toolbar pool-bulk"><label className="pool-job-select"><span>更换职位</span><select aria-label="重评目标职位" value={targetJob} disabled={changeJobMutation.isPending} onChange={(event) => setTargetJob(event.target.value)}><option value="">选择目标职位…</option>{(jobs.data || []).filter((job) => job.id !== jobId).map((job) => <option key={job.id} value={job.id}>{job.name}</option>)}</select></label><button className="button primary" disabled={!targetJob || changeJobMutation.isPending || rescoreMutation.isPending} onClick={() => changeJobMutation.mutate({ ids: selectedIds, target: targetJob })}><RefreshCw size={15} />{changeJobMutation.isPending ? "正在启动…" : "更换职位重新评分"}</button><span>按目标职位标准评分，保留原职位评分；完成后在目标职位查看。</span></div>}
     <div className="retrieval-bar results-retrieval"><div className="retrieval-title"><ListFilter size={16} /><span>结果检索</span><small>{data?.total || 0} 条</small></div><div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索姓名、岗位或文件" aria-label="搜索筛选结果" /></div><div className="retrieval-filters results-filters"><label><span>人工状态</span><select aria-label="人工状态" value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value)}><option value="all">全部状态</option><option value="pending">待复核</option><option value="advance">推进</option><option value="hold">保留</option><option value="reject">淘汰</option></select></label><label><span>匹配等级</span><select aria-label="匹配等级" value={matchFilter} onChange={(event) => setMatchFilter(event.target.value)}><option value="all">全部等级</option><option value="high">高匹配</option><option value="medium">中匹配</option><option value="low">低匹配</option><option value="unscored">尚未评分</option></select></label><label><span>任务状态</span><select aria-label="任务状态" value={runFilter} onChange={(event) => setRunFilter(event.target.value)}><option value="all">全部任务</option><option value="running">筛选中</option><option value="completed">已完成</option><option value="partial">部分失败</option><option value="canceled">已取消</option></select></label><label><span>开始日期</span><input type="date" aria-label="筛选开始日期" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label><label><span>结束日期</span><input type="date" aria-label="筛选结束日期" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label><label><span>排序</span><select aria-label="结果排序" value={sort} onChange={(event) => setSort(event.target.value)}><option value="screened-desc">最近筛选</option><option value="score-desc">分数从高到低</option><option value="score-asc">分数从低到高</option><option value="name-asc">姓名 A–Z</option></select></label></div></div>
     {evaluations.isLoading ? <div className="loading-block"><LoaderCircle className="spin" />正在汇总筛选结果</div> : shown.length === 0 ? <div className="filtered-empty"><Search /><strong>{data?.total === 0 && !search && reviewFilter === "all" && matchFilter === "all" ? "还没有筛选结果" : "没有符合条件的候选人"}</strong><span>{data?.total === 0 ? "在简历材料页选择候选人并开始筛选。" : "调整检索条件后再试。"}</span></div> : <><div className="candidate-selection-bar"><label><input type="checkbox" aria-label="选择当前候选人结果" checked={allShownSelected} onChange={toggleShown} /><strong>{selected.size ? "跨页选择已开启" : "选择当前页"}</strong></label><span>{selected.size ? "选择可跨页保留" : "勾选后可批量审核、重评、删除与导出"}</span></div><div className="candidate-list">{shown.map((item, index) => { const name = candidateDisplayName(item); return <div className={`candidate-row ${selected.has(item.id) ? "selected" : ""}`} key={item.id}><label className="candidate-check"><input type="checkbox" aria-label={`选择${name}`} checked={selected.has(item.id)} onChange={() => setSelected((current) => { const next = new Set(current); next.has(item.id) ? next.delete(item.id) : next.add(item.id); return next; })} /></label><button className="candidate-open" type="button" onClick={() => setDetail(item)}><span className="rank">{String((page - 1) * pageSize + index + 1).padStart(2, "0")}</span><div className="candidate-name"><strong data-testid="candidate-name">{name}</strong><small>{item.result?.candidate.current_role || item.status}</small><BackgroundBadges items={item.result?.background_highlights} /></div><div className="candidate-summary">{item.result?.summary || item.error || "正在生成评估卡…"}</div><div className="screened-date"><span>筛选日期</span><time dateTime={item.screened_at}>{screeningDateLabel(item.screened_at)}</time><small>{screeningTimeLabel(item.screened_at)}</small></div><div className={`review-chip ${item.review_status}`}>{reviewLabels[item.review_status]}</div><div className={`score-ring ${item.result?.match_level || "pending"}`}>{item.result?.overall_score ?? "—"}</div><ChevronRight /></button><RowMenu label={`${name}结果操作`}>{(close) => <><button role="menuitem" onClick={() => { close(); setDetail(item); }}><FileText />查看详情</button><button role="menuitem" onClick={() => { close(); rescoreMutation.mutate([item.id]); }}><RefreshCw />重新评分</button><button role="menuitem" className="danger-text" onClick={() => { close(); setConfirmDelete([item.id]); }}><Trash2 />移入回收站</button></>}</RowMenu></div>; })}</div><div className="pagination-bar"><label>每页<select aria-label="每页数量" value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option value={10}>10</option><option value={20}>20</option><option value={50}>50</option></select>条</label><div><button type="button" aria-label="第一页" disabled={page <= 1} onClick={() => setPage(1)}><ChevronLeft /></button>{pageNumbers.map((number) => <button type="button" className={number === page ? "active" : ""} key={number} onClick={() => setPage(number)}>{number}</button>)}<span>第 {page} / {totalPages} 页</span><button type="button" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)}>下一页</button></div></div></>}
-    <ErrorNotice error={evaluations.error || reviewMutation.error || rescoreMutation.error || deleteMutation.error} />{detail && <EvaluationDetail evaluation={detail} onClose={() => setDetail(null)} />}{confirmDelete && <ConfirmDialog title={`删除 ${confirmDelete.length} 条筛选结果？`} description="只会删除本次评分，原始简历和其他任务记录仍会保留；30 天内可恢复。" confirmLabel="移入回收站" danger busy={deleteMutation.isPending} onCancel={() => setConfirmDelete(null)} onConfirm={() => deleteMutation.mutate(confirmDelete)} />}
+    <ErrorNotice error={changeJobMutation.error || jobs.error || evaluations.error || reviewMutation.error || rescoreMutation.error || deleteMutation.error} />{detail && <EvaluationDetail evaluation={detail} onClose={() => setDetail(null)} />}{confirmDelete && <ConfirmDialog title={`删除 ${confirmDelete.length} 条筛选结果？`} description="只会删除本次评分，原始简历和其他任务记录仍会保留；30 天内可恢复。" confirmLabel="移入回收站" danger busy={deleteMutation.isPending} onCancel={() => setConfirmDelete(null)} onConfirm={() => deleteMutation.mutate(confirmDelete)} />}
   </section>;
 }
 
@@ -326,11 +484,16 @@ function SettingsDesk({ job, onUpdated, onDeleted }: { job: Job; onUpdated: (job
   const [name, setName] = useState(job.name);
   const [jd, setJd] = useState(job.jd_text);
   const [prompt, setPrompt] = useState(job.prompt);
+  const [profile, setProfile] = useState<ScoringDimension[]>(job.scoring_dimensions || []);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const mutation = useMutation({ mutationFn: () => api.updateJob(job.id, { name, jd_text: jd, prompt }), onSuccess: (updated) => { notify("岗位标准已保存"); onUpdated(updated); } });
+  const mutation = useMutation({
+    mutationFn: () => api.updateJob(job.id, { name, jd_text: jd, prompt, scoring_profile: toScoringProfile(profile) }),
+    onSuccess: (updated) => { notify("岗位标准已保存"); onUpdated(updated); },
+  });
   const deleteMutation = useMutation({ mutationFn: () => api.deleteJob(job.id), onSuccess: () => { notify("岗位案卷已移入回收站"); onDeleted(); } });
-  const dirty = name !== job.name || jd !== job.jd_text || prompt !== job.prompt;
-  return <section className="workspace-section settings-desk"><div className="desk-heading"><div><span className="eyebrow">STANDARD / 岗位标准</span><h2>岗位与提示词</h2><p className="heading-note">修改后只影响新启动的筛选任务</p></div><button className="button primary" onClick={() => mutation.mutate()} disabled={mutation.isPending || !dirty}>{mutation.isPending ? "保存中…" : "保存修改"}</button></div><div className="settings-grid"><label>岗位名称<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>岗位 JD<textarea rows={14} value={jd} onChange={(event) => setJd(event.target.value)} /></label><label>筛选提示词<textarea rows={14} value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label></div><div className="danger-zone"><div><strong>删除岗位案卷</strong><p>岗位及其简历、任务和筛选结果会进入回收站，30 天内可以恢复。</p></div><button className="button danger" onClick={() => setConfirmDelete(true)}><Trash2 size={16} />移入回收站</button></div><ErrorNotice error={mutation.error || deleteMutation.error} />{confirmDelete && <ConfirmDialog title={`删除岗位“${job.name}”？`} description="整个岗位案卷会进入回收站，包含简历原件、解析文本、筛选任务、评估结果和招聘备注。" confirmLabel="移入回收站" danger busy={deleteMutation.isPending} onCancel={() => setConfirmDelete(false)} onConfirm={() => deleteMutation.mutate()} />}</section>;
+  const dirty = name !== job.name || jd !== job.jd_text || prompt !== job.prompt
+    || JSON.stringify(toScoringProfile(profile)) !== JSON.stringify(toScoringProfile(job.scoring_dimensions || []));
+  return <section className="workspace-section settings-desk"><div className="desk-heading"><div><span className="eyebrow">STANDARD / 岗位标准</span><h2>岗位与提示词</h2><p className="heading-note">修改后只影响新启动的筛选任务</p></div><button className="button primary" onClick={() => mutation.mutate()} disabled={mutation.isPending || !dirty}>{mutation.isPending ? "保存中…" : "保存修改"}</button></div><div className="settings-grid"><label>岗位名称<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>岗位 JD<textarea rows={14} value={jd} onChange={(event) => setJd(event.target.value)} /></label><label>筛选提示词<textarea rows={14} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="使用「## 1. 名称：XX分」或带权重列的表格。硬性 Must-have 与加分项请在下方量尺中修改。" /></label></div><ScoringRubricEditor prompt={prompt} initialDimensions={job.scoring_dimensions || []} onChange={setProfile} /><div className="danger-zone"><div><strong>删除岗位案卷</strong><p>岗位及其简历、任务和筛选结果会进入回收站，30 天内可以恢复。</p></div><button className="button danger" onClick={() => setConfirmDelete(true)}><Trash2 size={16} />移入回收站</button></div><ErrorNotice error={mutation.error || deleteMutation.error} />{confirmDelete && <ConfirmDialog title={`删除岗位“${job.name}”？`} description="整个岗位案卷会进入回收站，包含简历原件、解析文本、筛选任务、评估结果和招聘备注。" confirmLabel="移入回收站" danger busy={deleteMutation.isPending} onCancel={() => setConfirmDelete(false)} onConfirm={() => deleteMutation.mutate()} />}</section>;
 }
 
 function TrashDesk({ onBack }: { onBack: () => void }) {
@@ -353,6 +516,99 @@ function TrashDesk({ onBack }: { onBack: () => void }) {
   </main>;
 }
 
+const poolGenderLabels: Record<string, string> = { male: "男", female: "女" };
+
+function PoolDesk({ onBack }: { onBack: () => void }) {
+  const queryClient = useQueryClient();
+  const notify = useNotify();
+  const { data: jobs = [] } = useQuery({ queryKey: ["jobs"], queryFn: api.jobs });
+  const { data: allItems = [], isLoading } = useQuery({
+    queryKey: ["pool", "all"],
+    queryFn: () => api.poolResumes("all"),
+    refetchInterval: (query) => (query.state.data || []).some((item) => ["uploaded", "parsing"].includes(item.parse_status) || ["queued", "parsing", "evaluating"].includes(item.evaluation_status || "")) ? 1500 : false,
+  });
+  const [tab, setTab] = useState<"new" | "evaluated" | "all">("new");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [targetJob, setTargetJob] = useState("");
+  const [pasting, setPasting] = useState(false);
+  const [textPreview, setTextPreview] = useState<Resume | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<PoolResume[] | null>(null);
+  const [evalFilter, setEvalFilter] = useState<"any" | "yes" | "no">("any");
+  const [scoreRange, setScoreRange] = useState({ min: "", max: "" });
+  const [ageRange, setAgeRange] = useState({ min: "", max: "" });
+  const [genderFilter, setGenderFilter] = useState<"any" | "male" | "female" | "unknown">("any");
+  const [jobFilter, setJobFilter] = useState<Set<string>>(new Set());
+  const [evalJobFilter, setEvalJobFilter] = useState<Set<string>>(new Set());
+  const poolItems = allItems.filter((item) => item.source === "email" || !item.job_id);
+  const newItems = poolItems.filter((item) => !item.evaluation);
+  const evaluatedItems = poolItems.filter((item) => item.evaluation);
+  const evaluatedJobOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    allItems.forEach((item) => (item.evaluated_jobs || []).forEach((entry) => seen.set(entry.job_id, entry.job_name)));
+    return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  }, [allItems]);
+  const allFiltered = useMemo(() => {
+    const minScore = scoreRange.min === "" ? null : Number(scoreRange.min);
+    const maxScore = scoreRange.max === "" ? null : Number(scoreRange.max);
+    const minAge = ageRange.min === "" ? null : Number(ageRange.min);
+    const maxAge = ageRange.max === "" ? null : Number(ageRange.max);
+    return allItems.filter((item) => {
+      const evaluation = item.evaluation;
+      if (evalFilter === "yes" && !evaluation) return false;
+      if (evalFilter === "no" && evaluation) return false;
+      const score = evaluation?.overall_score;
+      if ((minScore !== null || maxScore !== null) && (score === null || score === undefined)) return false;
+      if (minScore !== null && (score ?? 0) < minScore) return false;
+      if (maxScore !== null && (score ?? 0) > maxScore) return false;
+      const age = evaluation?.age;
+      if ((minAge !== null || maxAge !== null) && (age === null || age === undefined)) return false;
+      if (minAge !== null && (age ?? 0) < minAge) return false;
+      if (maxAge !== null && (age ?? 0) > maxAge) return false;
+      if (genderFilter === "unknown" && evaluation?.gender) return false;
+      if ((genderFilter === "male" || genderFilter === "female") && evaluation?.gender !== genderFilter) return false;
+      if (jobFilter.size > 0 && !(item.job_id ? jobFilter.has(item.job_id) : jobFilter.has("none"))) return false;
+      if (evalJobFilter.size > 0 && !(item.evaluated_jobs || []).some((entry) => evalJobFilter.has(entry.job_id))) return false;
+      return true;
+    });
+  }, [allItems, evalFilter, scoreRange, ageRange, genderFilter, jobFilter, evalJobFilter]);
+  const shown = tab === "new" ? newItems : tab === "evaluated" ? evaluatedItems : allFiltered;
+  const invalidate = () => { queryClient.invalidateQueries({ queryKey: ["pool"] }); queryClient.invalidateQueries({ queryKey: ["jobs"] }); queryClient.invalidateQueries({ queryKey: ["job"] }); };
+  const switchTab = (next: "new" | "evaluated" | "all") => { setTab(next); setSelected(new Set()); };
+  const toggleAll = () => setSelected((current) => { const next = new Set(current); if (shown.length && shown.every((item) => selected.has(item.id))) shown.forEach((item) => next.delete(item.id)); else shown.forEach((item) => next.add(item.id)); return next; });
+  const toggleFilter = (current: Set<string>, id: string) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; };
+  const selectedItems = allItems.filter((item) => selected.has(item.id));
+  const allParsed = selectedItems.length > 0 && selectedItems.every((item) => item.parse_status === "ready");
+  const assignMutation = useMutation({
+    mutationFn: (evaluate: boolean) => api.assignPool({ resume_ids: [...selected], job_id: targetJob, evaluate }),
+    onSuccess: (result) => { const message = `已分配 ${result.assigned} 份到岗位${result.run ? "，筛选任务已启动" : ""}`; const skipped = result.skipped.length ? `；跳过 ${result.skipped.length} 份` : ""; notify(message + skipped, result.skipped.length ? "info" : "success"); setSelected(new Set()); invalidate(); },
+  });
+  const deleteMutation = useMutation({
+    mutationFn: async (rows: PoolResume[]) => { for (const row of rows) await api.deleteResume(row.id); },
+    onSuccess: () => { notify("简历档案已移入回收站"); setConfirmDelete(null); setSelected(new Set()); invalidate(); },
+  });
+  const busy = assignMutation.isPending || deleteMutation.isPending;
+  const emptyTitle = tab === "new" ? "还没有新收取的简历" : tab === "evaluated" ? "还没有已评估的简历" : "没有符合筛选条件的简历";
+  const emptyHint = tab === "new" ? "邮箱捕获的 PDF/DOCX 简历会自动出现在这里。" : tab === "evaluated" ? "在「新收取」中选择简历，分配岗位并评估后即可在这里追踪。" : "调整上方的筛选条件，或到岗位案卷中上传简历。";
+  return <main className="trash-shell"><header className="topbar"><button className="back-link dark" onClick={onBack}><ArrowLeft />全部岗位</button><div className="brand-copy"><strong>HireFlow</strong><small>简历池</small></div><div className="topbar-actions"><button className="button quiet" type="button" onClick={() => setPasting(true)}><ClipboardPaste size={15} />粘贴文本</button></div></header><section className="trash-hero pool-hero"><div><span className="eyebrow">EMAIL INTAKE / INBOX</span><h1>简历池</h1><p>邮箱收取的简历先汇集在这里；选择后分配所属岗位，再统一评估。「所有简历」汇总全库档案，可按评估、分数、岗位、年龄与性别筛选。</p></div><Inbox /></section><section className="trash-content">
+    <div className="pool-tabs"><button className={`button ${tab === "new" ? "primary" : "quiet"}`} onClick={() => switchTab("new")}>新收取 {newItems.length}</button><button className={`button ${tab === "evaluated" ? "primary" : "quiet"}`} onClick={() => switchTab("evaluated")}>已评估 {evaluatedItems.length}</button><button className={`button ${tab === "all" ? "primary" : "quiet"}`} onClick={() => switchTab("all")}>所有简历 {allItems.length}</button></div>
+    {tab === "all" && <div className="pool-filters">
+      <label><span>是否评估</span><select aria-label="是否评估" value={evalFilter} onChange={(event) => setEvalFilter(event.target.value as typeof evalFilter)}><option value="any">全部</option><option value="yes">已评估</option><option value="no">未评估</option></select></label>
+      <label><span>评估分数</span><div className="range-pair"><input aria-label="最低分" type="number" min={0} max={100} placeholder="最低" value={scoreRange.min} onChange={(event) => setScoreRange((range) => ({ ...range, min: event.target.value }))} /><em>–</em><input aria-label="最高分" type="number" min={0} max={100} placeholder="最高" value={scoreRange.max} onChange={(event) => setScoreRange((range) => ({ ...range, max: event.target.value }))} /></div></label>
+      <label><span>年龄</span><div className="range-pair"><input aria-label="最小年龄" type="number" min={0} max={120} placeholder="最小" value={ageRange.min} onChange={(event) => setAgeRange((range) => ({ ...range, min: event.target.value }))} /><em>–</em><input aria-label="最大年龄" type="number" min={0} max={120} placeholder="最大" value={ageRange.max} onChange={(event) => setAgeRange((range) => ({ ...range, max: event.target.value }))} /></div></label>
+      <label><span>性别</span><select aria-label="性别" value={genderFilter} onChange={(event) => setGenderFilter(event.target.value as typeof genderFilter)}><option value="any">全部</option><option value="male">男</option><option value="female">女</option><option value="unknown">未知</option></select></label>
+      <div className="chip-filter"><span>所属岗位（可多选）</span><div>{jobs.map((job) => <button key={job.id} type="button" className={`chip ${jobFilter.has(job.id) ? "active" : ""}`} onClick={() => setJobFilter((current) => toggleFilter(current, job.id))}>{job.name}</button>)}<button type="button" className={`chip ${jobFilter.has("none") ? "active" : ""}`} onClick={() => setJobFilter((current) => toggleFilter(current, "none"))}>未分配</button></div></div>
+      <div className="chip-filter"><span>已评估岗位（可多选）</span><div>{evaluatedJobOptions.length === 0 ? <small>暂无可选岗位</small> : evaluatedJobOptions.map((option) => <button key={option.id} type="button" className={`chip ${evalJobFilter.has(option.id) ? "active" : ""}`} onClick={() => setEvalJobFilter((current) => toggleFilter(current, option.id))}>{option.name}</button>)}</div></div>
+    </div>}
+    <ErrorNotice error={assignMutation.error || deleteMutation.error} />
+    {selected.size > 0 && <div className="bulk-toolbar pool-bulk"><strong>已选 {selected.size} 份简历</strong>{tab !== "evaluated" && <><label className="pool-job-select"><span>分配到</span><select aria-label="选择目标岗位" value={targetJob} onChange={(event) => setTargetJob(event.target.value)}><option value="">选择岗位…</option>{jobs.map((job) => <option key={job.id} value={job.id}>{job.name}</option>)}</select></label><button className="button primary" disabled={!targetJob || !allParsed || busy} onClick={() => assignMutation.mutate(true)}><Sparkles size={15} />分配并评估</button><button className="button quiet" disabled={!targetJob || busy} onClick={() => assignMutation.mutate(false)}>仅分配</button></>}<button className="button quiet" disabled={busy} onClick={() => setConfirmDelete(selectedItems)}><Trash2 size={15} />移入回收站</button><button className="button quiet" onClick={() => setSelected(new Set())}>取消选择</button></div>}
+    {tab !== "evaluated" && selected.size > 0 && !allParsed && <div className="cost-strip"><CircleAlert size={16} /><span>部分简历仍在解析，请等全部变为「文本就绪」后再启动评估。</span></div>}
+    {isLoading ? <div className="loading-block"><LoaderCircle className="spin" />正在整理简历池</div> : shown.length === 0 ? <div className="empty-state"><Inbox /><h3>{emptyTitle}</h3><p>{emptyHint}</p></div> : <div className="resume-table"><div className="table-row table-head"><label><input type="checkbox" aria-label="选择当前筛选结果" checked={shown.length > 0 && shown.every((item) => selected.has(item.id))} onChange={toggleAll} /></label><span>文件</span>{tab === "all" ? <><span>性别 / 年龄</span><span>所属岗位</span><span>评估分数</span><span>收取时间</span></> : tab === "new" ? <><span>格式 / 大小</span><span>解析状态</span><span>收取时间</span></> : <><span>格式 / 大小</span><span>所属岗位</span><span>评估结果</span></>}<span>操作</span></div>{shown.map((item) => { const name = item.display_name || item.original_name; return <div className="table-row" key={item.id}><label><input type="checkbox" aria-label={`选择${name}`} checked={selected.has(item.id)} onChange={() => setSelected((current) => { const next = new Set(current); next.has(item.id) ? next.delete(item.id) : next.add(item.id); return next; })} /></label><div className="file-name"><FileText size={17} /><div><strong>{name}</strong><small className="pool-source">{item.source === "email" ? `邮箱收取${item.source_title ? ` · 职位：${item.source_title}` : ""}` : item.source === "paste" ? "粘贴文本" : "手动上传"}{tab === "all" ? ` · ${item.original_name.split(".").pop()?.toUpperCase()} · ${sizeLabel(item.size_bytes)}` : ""}</small></div></div>{tab === "all" ? <><span>{item.evaluation?.gender ? poolGenderLabels[item.evaluation.gender] : "—"} · {item.evaluation?.age ? `${item.evaluation.age} 岁` : "—"}</span><span className="cell-stack">{item.job_name || "未分配"}{(item.evaluated_jobs || []).length > 0 && <small>已评估：{(item.evaluated_jobs || []).map((entry) => entry.job_name).join("、")}</small>}</span><span className={`score-chip ${item.evaluation?.match_level || "pending"}`}>{item.evaluation ? `${item.evaluation.overall_score ?? "—"} 分` : "未评估"}</span><span>{dateLabel(item.created_at)}</span></> : <><span>{item.original_name.split(".").pop()?.toUpperCase()} · {sizeLabel(item.size_bytes)}{item.page_count ? ` · ${item.page_count} 页` : ""}</span>{tab === "new" ? <><span className={`status-dot ${item.parse_status}`} title={item.parse_error || undefined}>{item.parse_status === "ready" ? "文本就绪" : item.parse_status === "failed" ? "解析失败" : item.parse_status === "parsing" ? "解析中" : "待解析"}</span><span>{dateLabel(item.created_at)}</span></> : <><span>{item.job_name || "未分配"}</span><span className={`score-chip ${item.evaluation?.match_level || "pending"}`}>{item.evaluation?.overall_score ?? "—"} 分</span><span>{dateLabel(item.created_at)}</span></>}</>}<div className="row-actions">{item.parse_status === "ready" && <button className="text-action" onClick={() => setTextPreview(item)} aria-label={`查看${name}文本`}>查看文本</button>}<a className="text-action" href={`/api/resumes/${item.id}/preview`} target="_blank" rel="noreferrer">预览原件</a></div></div>; })}</div>}
+    {textPreview && <ResumeTextDialog resume={textPreview} onClose={() => setTextPreview(null)} onSaved={invalidate} />}
+    {pasting && <PasteResumeDialog submit={api.pastePoolResume} createdMessage="简历已录入简历池，候选人身份将自动提取" onClose={() => setPasting(false)} onCreated={invalidate} />}
+    {confirmDelete && <ConfirmDialog title={`删除 ${confirmDelete.length} 份简历档案？`} description="原件、解析文本和关联筛选结果会一起移入回收站，30 天内可以恢复。" confirmLabel="移入回收站" danger busy={deleteMutation.isPending} onCancel={() => setConfirmDelete(null)} onConfirm={() => deleteMutation.mutate(confirmDelete)} />}
+  </section></main>;
+}
+
 function JobWorkspace({ jobId, onBack, onTrash }: { jobId: string; onBack: () => void; onTrash: () => void }) {
   const queryClient = useQueryClient();
   const { data: job, error, isLoading } = useQuery({ queryKey: ["job", jobId], queryFn: () => api.job(jobId) });
@@ -365,8 +621,9 @@ function JobWorkspace({ jobId, onBack, onTrash }: { jobId: string; onBack: () =>
 
 export default function App() {
   const [jobId, setJobId] = useState<string | null>(null);
+  const [poolOpen, setPoolOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [notices, setNotices] = useState<{ id: number; message: string; kind: NoticeKind }[]>([]);
   const notify: Notify = (message, kind = "success") => { const id = Date.now() + Math.random(); setNotices((items) => [...items, { id, message, kind }]); window.setTimeout(() => setNotices((items) => items.filter((item) => item.id !== id)), 3500); };
-  return <ToastContext.Provider value={notify}>{trashOpen ? <TrashDesk onBack={() => setTrashOpen(false)} /> : jobId ? <JobWorkspace jobId={jobId} onBack={() => setJobId(null)} onTrash={() => setTrashOpen(true)} /> : <JobList onOpen={setJobId} onTrash={() => setTrashOpen(true)} />}<div className="toast-stack" aria-live="polite">{notices.map((notice) => <div className={`toast ${notice.kind}`} key={notice.id}>{notice.kind === "success" ? <Check /> : <CircleAlert />}<span>{notice.message}</span><button aria-label="关闭通知" onClick={() => setNotices((items) => items.filter((item) => item.id !== notice.id))}><X /></button></div>)}</div></ToastContext.Provider>;
+  return <ToastContext.Provider value={notify}>{poolOpen ? <PoolDesk onBack={() => setPoolOpen(false)} /> : trashOpen ? <TrashDesk onBack={() => setTrashOpen(false)} /> : jobId ? <JobWorkspace jobId={jobId} onBack={() => setJobId(null)} onTrash={() => setTrashOpen(true)} /> : <JobList onOpen={setJobId} onTrash={() => setTrashOpen(true)} onPool={() => setPoolOpen(true)} />}<div className="toast-stack" aria-live="polite">{notices.map((notice) => <div className={`toast ${notice.kind}`} key={notice.id}>{notice.kind === "success" ? <Check /> : <CircleAlert />}<span>{notice.message}</span><button aria-label="关闭通知" onClick={() => setNotices((items) => items.filter((item) => item.id !== notice.id))}><X /></button></div>)}</div></ToastContext.Provider>;
 }

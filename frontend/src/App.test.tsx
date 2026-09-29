@@ -26,6 +26,30 @@ test("展示岗位案卷并允许创建第一个岗位", async () => {
   expect(await screen.findByText("还没有岗位案卷")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "创建第一个岗位" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "打开回收站" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "打开简历池" })).toBeInTheDocument();
+});
+
+test("首页可打开简历池并看到空状态", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/pool/resumes")) {
+        return new Response(JSON.stringify([]));
+      }
+      return new Response(JSON.stringify([]));
+    }),
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "打开简历池" }));
+  expect(await screen.findByText("还没有新收取的简历")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "已评估 0" })).toBeInTheDocument();
 });
 
 test("候选人详情展示每个评估维度的独立分数", () => {
@@ -225,4 +249,320 @@ test("未识别姓名回退到简历文件名，评估失败不显示为解析�
   expect(screen.getByText("侯东鹏_11年.pdf")).toBeInTheDocument();
   expect(screen.getByText("评估模型未返回结果，不是简历文件解析失败，请重试")).toBeInTheDocument();
   expect(screen.queryByText("解析失败")).not.toBeInTheDocument();
+});
+
+test("创建岗位时展示编译后的计分维度", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/health")) {
+        return new Response(JSON.stringify({ status: "ok", model_configured: true }));
+      }
+      if (url.endsWith("/api/scoring-preview")) {
+        expect(init?.method).toBe("POST");
+        return new Response(
+          JSON.stringify({
+            source: "prompt",
+            dimensions: [
+              { criterion_id: "D01", name: "CDC 同步引擎能力", weight: 30, kind: "knockout", knockout: true },
+              { criterion_id: "D02", name: "工程落地", weight: 70, kind: "core", knockout: false },
+            ],
+          }),
+        );
+      }
+      if (url.endsWith("/api/jobs") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            id: "job-new",
+            name: "资深数据架构师",
+            jd_text: "实时数据引擎",
+            prompt: "标准",
+            resume_count: 0,
+            run_count: 0,
+            created_at: "2026-08-29T00:00:00Z",
+            updated_at: "2026-08-29T00:00:00Z",
+          }),
+          { status: 201 },
+        );
+      }
+      return new Response(JSON.stringify([]));
+    }),
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "创建第一个岗位" }));
+  fireEvent.change(screen.getByPlaceholderText(/硬性/), {
+    target: { value: "### 1. CDC 同步引擎能力（硬性）：30分\n### 2. 工程落地：70分" },
+  });
+
+  expect(await screen.findByText("实际计分维度")).toBeInTheDocument();
+  expect(screen.getByText("CDC 同步引擎能力")).toBeInTheDocument();
+  expect(screen.getByLabelText("CDC 同步引擎能力的计分性质")).toHaveValue("knockout");
+  expect(screen.getByText("30 分")).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText("CDC 同步引擎能力的计分性质"), { target: { value: "bonus" } });
+  fireEvent.change(screen.getByLabelText("工程落地的计分性质"), { target: { value: "knockout" } });
+  fireEvent.change(screen.getByPlaceholderText("例如：高级后端工程师"), { target: { value: "资深数据架构师" } });
+  fireEvent.change(screen.getByPlaceholderText("粘贴完整岗位描述、职责与基本要求"), { target: { value: "实时数据引擎" } });
+  fireEvent.click(screen.getByRole("button", { name: "建立岗位案卷" }));
+
+  await waitFor(() => {
+    const createCall = vi.mocked(fetch).mock.calls.find(
+      (entry) => String(entry[0]).endsWith("/api/jobs") && entry[1]?.method === "POST",
+    );
+    expect(createCall).toBeTruthy();
+    const body = JSON.parse(String(createCall?.[1]?.body));
+    expect(body.scoring_profile).toEqual([
+      { name: "CDC 同步引擎能力", weight: 30, kind: "bonus" },
+      { name: "工程落地", weight: 70, kind: "knockout" },
+    ]);
+  });
+});
+
+test("候选人详情标注未满足的硬性维度", () => {
+  const evaluation: Evaluation = {
+    id: "evaluation-1",
+    run_id: "run-1",
+    resume_id: "resume-1",
+    resume_name: "候选人.pdf",
+    status: "completed",
+    result: {
+      candidate: { name: "候选人", current_role: "数据工程师" },
+      overall_score: 82,
+      match_level: "low",
+      confidence: 0.8,
+      summary: "硬性项不满足。",
+      criteria: [
+        {
+          criterion_id: "D01",
+          criterion: "CDC 引擎",
+          weight: 20,
+          score: 10,
+          weighted_score: 2,
+          status: "not_met",
+          knockout: true,
+          evidence: [{ text: "仅使用过同步产品", location: "第 1 页" }],
+        },
+      ],
+      strengths: [],
+      gaps: ["缺少引擎开发"],
+      risk_flags: [],
+      interview_questions: [],
+    },
+    error: null,
+    attempts: 1,
+    review_status: "pending",
+    review_note: "",
+    screened_at: "2026-08-10T00:00:00Z",
+    updated_at: "2026-08-10T00:00:00Z",
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <EvaluationDetail evaluation={evaluation} onClose={() => undefined} />
+    </QueryClientProvider>,
+  );
+
+  expect(screen.getAllByText("硬性").length).toBeGreaterThan(0);
+  expect(screen.getByText("硬性项未满足，匹配等级已限制为低")).toBeInTheDocument();
+});
+
+test("简历池「所有简历」汇总全库并可按条件筛选", async () => {
+  const job = { id: "job-1", name: "资深数据架构师", jd_text: "JD", prompt: "标准", resume_count: 0, run_count: 0, created_at: "2026-08-10T00:00:00Z", updated_at: "2026-08-10T00:00:00Z" };
+  const emailItem = {
+    id: "pool-email", job_id: "job-1", job_name: "资深数据架构师", original_name: "邮箱女.docx", display_name: "邮箱女.docx",
+    source_title: "资深JAVA工程师-实时数据引擎", mime_type: "docx", size_bytes: 1000, page_count: 1, parse_status: "ready", parse_error: null,
+    source: "email", created_at: "2026-08-10T01:00:00Z",
+    evaluation: { overall_score: 86, match_level: "high", review_status: "pending", gender: "female", age: 28 },
+    evaluated_jobs: [{ job_id: "job-1", job_name: "资深数据架构师" }],
+  };
+  const uploadItem = {
+    id: "pool-upload", job_id: null, job_name: null, original_name: "上传男.pdf", display_name: "上传男.pdf",
+    source_title: null, mime_type: "pdf", size_bytes: 2000, page_count: 2, parse_status: "ready", parse_error: null,
+    source: "upload", created_at: "2026-08-10T02:00:00Z",
+    evaluation: null,
+    evaluated_jobs: [],
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/health")) {
+      return new Response(JSON.stringify({ status: "ok", model_configured: true }));
+    }
+    if (url.includes("/api/pool/resumes")) {
+      return new Response(JSON.stringify([emailItem, uploadItem]));
+    }
+    if (url.endsWith("/api/jobs")) {
+      return new Response(JSON.stringify([job]));
+    }
+    return new Response(JSON.stringify([]));
+  }));
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "打开简历池" }));
+  await screen.findByRole("button", { name: "所有简历 2" });
+  fireEvent.click(screen.getByRole("button", { name: "所有简历 2" }));
+  expect(await screen.findByText("女 · 28 岁")).toBeInTheDocument();
+  expect(screen.getByText("上传男.pdf")).toBeInTheDocument();
+  expect(screen.getByText("所属岗位（可多选）")).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText("性别"), { target: { value: "female" } });
+  expect(screen.queryByText("上传男.pdf")).not.toBeInTheDocument();
+  expect(screen.getByText("女 · 28 岁")).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText("性别"), { target: { value: "any" } });
+  fireEvent.change(screen.getByLabelText("是否评估"), { target: { value: "no" } });
+  expect(screen.queryByText("邮箱女.docx")).not.toBeInTheDocument();
+  expect(screen.getByText("上传男.pdf")).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText("是否评估"), { target: { value: "yes" } });
+  fireEvent.change(screen.getByLabelText("最低分"), { target: { value: "90" } });
+  expect(await screen.findByText("没有符合筛选条件的简历")).toBeInTheDocument();
+});
+
+test("简历池区分失败与完成评估，并在文本就绪后继续刷新评分", async () => {
+  let complete = false;
+  let pending = false;
+  const row = {
+    id: "synthetic-pool", job_id: "job-test", job_name: "测试岗位", original_name: "synthetic.docx", display_name: "合成材料",
+    mime_type: "docx", size_bytes: 100, page_count: 1, parse_status: "ready", source: "email", created_at: "2026-09-08T00:00:00Z",
+    evaluation: null, evaluation_status: "failed", evaluated_jobs: [],
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/api/pool/resumes")) return new Response(JSON.stringify([{
+      ...row,
+      evaluation_status: complete ? "completed" : pending ? "evaluating" : "failed",
+      evaluation: complete ? { overall_score: 86, match_level: "high", review_status: "pending" } : null,
+    }]));
+    if (url.endsWith("/api/health")) return new Response(JSON.stringify({ model_configured: true }));
+    return new Response(JSON.stringify([]));
+  }));
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole("button", { name: "打开简历池" }));
+  expect(await screen.findByRole("button", { name: "新收取 1" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "已评估 0" })).toBeInTheDocument();
+  pending = true;
+  await queryClient.invalidateQueries({ queryKey: ["pool"] });
+  complete = true;
+  await waitFor(() => expect(screen.getByRole("button", { name: "已评估 1" })).toBeInTheDocument(), { timeout: 4000 });
+  fireEvent.click(screen.getByRole("button", { name: "已评估 1" }));
+  expect(screen.getByText("86 分")).toBeInTheDocument();
+  queryClient.clear();
+});
+
+test("评分结果支持跨页选中后更换职位重评", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/jobs") return new Response(JSON.stringify([{ id: "job-1", name: "原岗位" }, { id: "job-2", name: "质量架构师" }]));
+    if (url === "/api/evaluations/rescore") return new Response(JSON.stringify({ id: "new-run", job_id: "job-2" }));
+    const page = new URL(url, "http://localhost").searchParams.get("page") || "1";
+    return new Response(JSON.stringify({ items: [{ id: `evaluation-${page}`, resume_id: `resume-${page}`, resume_name: `测试候选人${page}`, status: "completed", review_status: "pending", screened_at: "2026-09-10T00:00:00Z" }], page: Number(page), total: 2, total_pages: 2 }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={queryClient}><ResultsDesk jobId="job-1" /></QueryClientProvider>);
+  fireEvent.click(await screen.findByLabelText("选择测试候选人1"));
+  expect(screen.getByRole("button", { name: "更换职位重新评分" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+  fireEvent.click(await screen.findByLabelText("选择测试候选人2"));
+  fireEvent.change(screen.getByLabelText("重评目标职位"), { target: { value: "job-2" } });
+  fireEvent.click(screen.getByRole("button", { name: "更换职位重新评分" }));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/evaluations/rescore", expect.objectContaining({ body: JSON.stringify({ evaluation_ids: ["evaluation-1", "evaluation-2"], job_id: "job-2" }) })));
+  await waitFor(() => expect(screen.queryByText("已选 2 人")).not.toBeInTheDocument());
+});
+
+test("简历池粘贴文本录入，疑似重复时确认后才创建", async () => {
+  let confirmSeen = false;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/pool/resumes/paste")) {
+      const payload = JSON.parse(String(init?.body || "{}"));
+      if (!payload.confirm) {
+        return new Response(JSON.stringify({
+          created: false,
+          resume: null,
+          duplicates: [{ id: "r-dup", name: "张三.txt", source: "paste", created_at: "2026-09-15T01:00:00Z", matched_fields: ["邮箱"] }],
+        }));
+      }
+      confirmSeen = true;
+      return new Response(JSON.stringify({
+        created: true,
+        resume: {
+          id: "r-new", job_id: null, job_name: null, original_name: "张三.txt", display_name: "张三",
+          mime_type: "text/plain", size_bytes: 100, page_count: null, parse_status: "ready", parse_error: null,
+          source: "paste", created_at: "2026-09-15T02:00:00Z", evaluation: null, evaluated_jobs: [],
+        },
+        duplicates: [],
+      }));
+    }
+    return new Response(JSON.stringify([]));
+  }));
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "打开简历池" }));
+  fireEvent.click(await screen.findByRole("button", { name: "粘贴文本" }));
+  fireEvent.change(screen.getByPlaceholderText(/粘贴简历全文/), { target: { value: "邮箱 zs@example.com" } });
+  fireEvent.click(screen.getByRole("button", { name: "确认录入" }));
+  expect(await screen.findByText(/疑似重复/)).toBeInTheDocument();
+  expect(screen.getByText("张三.txt")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "仍然录入" }));
+  await waitFor(() => expect(confirmSeen).toBe(true));
+});
+
+test("职位详情页粘贴文本录入后立即启动评分", async () => {
+  let pasteSeen = false;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/health")) {
+      return new Response(JSON.stringify({ status: "ok", model_configured: true, vision_enabled: false }));
+    }
+    if (url.endsWith("/api/jobs/job-1/resumes/paste")) {
+      pasteSeen = true;
+      const payload = JSON.parse(String(init?.body || "{}"));
+      expect(payload.text).toContain("五年后端经验");
+      return new Response(JSON.stringify({
+        created: true,
+        resume: { id: "r-pasted", job_id: "job-1", original_name: "粘贴简历.txt", display_name: "粘贴简历.txt", mime_type: "text/plain", size_bytes: 50, page_count: null, parse_status: "ready", parse_error: null, source: "paste", parsed_text_source: "extracted", parsed_text_updated_at: null, created_at: "2026-09-16T01:00:00Z" },
+        duplicates: [],
+        run: { id: "run-1", job_id: "job-1", status: "queued", total_count: 1, completed_count: 0, failed_count: 0, text_model: "m", vision_model: "v", created_at: "2026-09-16T01:00:00Z", started_at: null, completed_at: null },
+      }));
+    }
+    return new Response(JSON.stringify([]));
+  }));
+  const job: Job = { id: "job-1", name: "后端工程师", jd_text: "JD", prompt: "标准", resume_count: 0, run_count: 0, created_at: "2026-09-16T00:00:00Z", updated_at: "2026-09-16T00:00:00Z" };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ResumeDesk job={job} onRunCreated={() => undefined} />
+    </QueryClientProvider>,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "粘贴文本" }));
+  fireEvent.change(screen.getByPlaceholderText(/粘贴简历全文/), { target: { value: "五年后端经验" } });
+  fireEvent.click(screen.getByRole("button", { name: "确认录入" }));
+  await waitFor(() => expect(pasteSeen).toBe(true));
+  // 录入成功后弹窗关闭（created 分支），列表随之刷新
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 });

@@ -14,7 +14,7 @@ from app.schemas import EvaluationCard
 
 
 class FakeEvaluator:
-    async def evaluate(self, *, jd_text: str, prompt: str, resume_text: str) -> EvaluationCard:
+    async def evaluate(self, *, jd_text: str, prompt: str, resume_text: str, scoring_profile=None) -> EvaluationCard:
         assert prompt == "重点考察 Python 工程能力"
         assert "Python" in resume_text
         candidate_name = "李雨" if "李雨" in resume_text else "张晨"

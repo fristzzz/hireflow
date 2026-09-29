@@ -8,13 +8,15 @@ from typing import Literal
 
 from fastapi import HTTPException
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from .config import Settings
+from .evaluator import compile_scoring_rubric
 from .exporter import build_csv, build_docx, build_json, build_markdown, build_xlsx
 from .lifecycle import TrashType
 from .models import Evaluation, Job, Resume, ScreeningRun
-from .schemas import EvaluationCard, EvaluationOut, JobOut, ResumeOut, RunOut, TrashItem
+from .schemas import EvaluationCard, EvaluationOut, JobOut, ResumeOut, RunOut, ScoringDimensionOut, TrashItem
 
 
 def active_job(session: Session, job_id: str) -> Job | None:
@@ -24,11 +26,11 @@ def active_job(session: Session, job_id: str) -> Job | None:
 def active_resume(session: Session, resume_id: str) -> Resume | None:
     return session.scalar(
         select(Resume)
-        .join(Resume.job)
+        .outerjoin(Resume.job)
         .where(
             Resume.id == resume_id,
             Resume.deleted_at.is_(None),
-            Job.deleted_at.is_(None),
+            or_(Job.deleted_at.is_(None), Resume.job_id.is_(None)),
         )
     )
 
@@ -45,6 +47,80 @@ def active_run(session: Session, run_id: str) -> ScreeningRun | None:
     )
 
 
+def create_run_for_resumes(
+    session: Session,
+    job: Job,
+    resumes: list[Resume],
+    settings: Settings,
+) -> ScreeningRun:
+    """为一批简历创建筛选任务与评估记录行（不提交事务，由调用方提交）。
+
+    供岗位内「筛选已选」与简历池「分配并评估」共用，保证快照口径一致。
+    """
+
+    run = ScreeningRun(
+        job_id=job.id,
+        jd_snapshot=job.jd_text,
+        prompt_snapshot=job.prompt,
+        scoring_profile_snapshot=job.scoring_profile,
+        text_model=settings.text_model,
+        vision_model=settings.vision_model,
+        schema_version="2",
+        total_count=len(resumes),
+    )
+    session.add(run)
+    session.flush()
+    evaluations: list[Evaluation] = []
+    for resume in resumes:
+        previous = session.scalar(
+            select(Evaluation)
+            .where(
+                Evaluation.resume_id == resume.id,
+                Evaluation.job_id == job.id,
+                Evaluation.is_current.is_(True),
+                Evaluation.deleted_at.is_(None),
+            )
+            .order_by(Evaluation.updated_at.desc())
+        )
+        evaluations.append(
+            Evaluation(
+                run_id=run.id,
+                job_id=job.id,
+                resume_id=resume.id,
+                is_current=previous is None,
+                replaces_evaluation_id=previous.id if previous else None,
+            )
+        )
+    session.add_all(evaluations)
+    return run
+
+
+def serialize_scoring(
+    prompt: str,
+    profile: list[dict[str, object]] | None = None,
+) -> tuple[list[ScoringDimensionOut], Literal["prompt", "default", "profile", "invalid"], str | None]:
+    """把提示词或界面量尺编译为可预览结果；无法识别时保留岗位本身，只返回错误说明。"""
+
+    try:
+        rubric = compile_scoring_rubric(prompt, profile)
+    except RuntimeError as exc:
+        return [], "invalid", str(exc)
+    return (
+        [
+            ScoringDimensionOut(
+                criterion_id=item.criterion_id,
+                name=item.name,
+                weight=item.weight,
+                kind=item.kind,
+                knockout=item.knockout,
+            )
+            for item in rubric.dimensions
+        ],
+        rubric.source,
+        None,
+    )
+
+
 def serialize_job(session: Session, job: Job) -> JobOut:
     resume_count = session.scalar(
         select(func.count()).select_from(Resume).where(Resume.job_id == job.id, Resume.deleted_at.is_(None))
@@ -54,6 +130,7 @@ def serialize_job(session: Session, job: Job) -> JobOut:
         .select_from(ScreeningRun)
         .where(ScreeningRun.job_id == job.id, ScreeningRun.deleted_at.is_(None))
     ) or 0
+    scoring_dimensions, scoring_source, scoring_error = serialize_scoring(job.prompt, job.scoring_profile)
     return JobOut(
         id=job.id,
         name=job.name,
@@ -61,6 +138,9 @@ def serialize_job(session: Session, job: Job) -> JobOut:
         prompt=job.prompt,
         resume_count=resume_count,
         run_count=run_count,
+        scoring_dimensions=scoring_dimensions,
+        scoring_source=scoring_source,
+        scoring_error=scoring_error,
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
@@ -77,6 +157,7 @@ def serialize_resume(resume: Resume) -> ResumeOut:
         page_count=resume.page_count,
         parse_status=resume.parse_status,
         parse_error=resume.parse_error,
+        source=resume.source if resume.source in {"upload", "email", "paste"} else "upload",
         parsed_text_source=resume.parsed_text_source
         if resume.parsed_text_source in {"extracted", "manual"}
         else "extracted",
@@ -173,7 +254,7 @@ def serialize_trash_item(item_type: TrashType, item: Job | Resume | ScreeningRun
             id=resume.id,
             name=resume_display_name(resume),
             job_id=resume.job_id,
-            job_name=resume.job.name,
+            job_name=resume.job.name if resume.job else "简历池",
             deleted_at=resume.deleted_at,
             purge_at=resume.purge_at,
         )

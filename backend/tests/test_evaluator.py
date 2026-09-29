@@ -214,3 +214,145 @@ def test_compile_scoring_dimensions_uses_stable_fallback() -> None:
 
     assert sum(item.weight for item in dimensions) == 100
     assert [item.criterion_id for item in dimensions] == ["D01", "D02", "D03", "D04", "D05", "D06"]
+    assert all(not item.knockout for item in dimensions)
+
+
+def test_compile_scoring_dimensions_from_markdown_table() -> None:
+    prompt = """
+## 评分标准
+
+| 评分项 | 权重 | 说明 |
+| --- | --- | --- |
+| CDC 同步引擎能力 | 30分 | 要有引擎开发，不只是使用 |
+| 数据建模与分层 | 25 | 数仓分层与主题域 |
+| 实时架构设计 | 20 | 延迟与一致性 |
+| 领域加分项 | 15 | 金融或安全背景 |
+| 工程落地 | 10 | 代码与交付 |
+"""
+
+    dimensions = compile_scoring_dimensions(prompt)
+
+    assert [(item.name, item.weight, item.kind) for item in dimensions] == [
+        ("CDC 同步引擎能力", 30, "core"),
+        ("数据建模与分层", 25, "core"),
+        ("实时架构设计", 20, "core"),
+        ("领域加分项", 15, "bonus"),
+        ("工程落地", 10, "core"),
+    ]
+
+
+def test_compile_scoring_dimensions_from_wide_markdown_table() -> None:
+    prompt = """
+| 评估维度 | 权重 | 关注能力与考察重点 | 评分标准 |
+| :--- | :--- | :--- | :--- |
+| **CDC 与实时计算** | 30% | Flink CDC | • **25-30分**：源码级定制 |
+| **数据引擎与建模** | 25% | Doris | • **20-25分**：湖仓建模 |
+| **架构与稳定性** | 20% | 链路 | • **16-20分**：主导架构 |
+| **加分项与场景契合** | 15% | 金融 | • **12-15分**：跨境 |
+| **基础工程与通用素养** | 10% | Java | • **8-10分**：开源 |
+"""
+
+    dimensions = compile_scoring_dimensions(prompt)
+
+    assert [(item.name, item.weight, item.kind) for item in dimensions] == [
+        ("CDC 与实时计算", 30, "core"),
+        ("数据引擎与建模", 25, "core"),
+        ("架构与稳定性", 20, "core"),
+        ("加分项与场景契合", 15, "bonus"),
+        ("基础工程与通用素养", 10, "core"),
+    ]
+
+
+def test_compile_scoring_dimensions_rejects_unparsed_weight_text() -> None:
+    prompt = "评分标准：CDC 30分，建模 25分，架构 20分，加分 15分，工程 10分。"
+
+    with pytest.raises(RuntimeError, match="无法识别"):
+        compile_scoring_dimensions(prompt)
+
+
+def test_compile_scoring_dimensions_marks_knockout_from_heading() -> None:
+    prompt = """
+### 1. Java 工程能力：80分
+### 2. CDC 引擎（硬性）：20分
+"""
+
+    dimensions = compile_scoring_dimensions(prompt)
+
+    assert [(item.name, item.weight, item.kind, item.knockout) for item in dimensions] == [
+        ("Java 工程能力", 80, "core", False),
+        ("CDC 引擎", 20, "knockout", True),
+    ]
+
+
+def test_compile_scoring_profile_overrides_must_have_and_bonus() -> None:
+    prompt = """
+### 1. CDC 同步引擎能力：30分
+### 2. 数据建模与分层：25分
+### 3. 实时架构设计：20分
+### 4. 领域加分项：15分
+### 5. 工程落地：10分
+"""
+    dimensions = compile_scoring_dimensions(
+        prompt,
+        [
+            {"name": "CDC 同步引擎能力", "weight": 30, "kind": "knockout"},
+            {"name": "数据建模与分层", "weight": 25, "kind": "core"},
+            {"name": "实时架构设计", "weight": 20, "kind": "core"},
+            {"name": "领域加分项", "weight": 15, "kind": "bonus"},
+            {"name": "工程落地", "weight": 10, "kind": "core"},
+        ],
+    )
+
+    assert [(item.name, item.kind) for item in dimensions] == [
+        ("CDC 同步引擎能力", "knockout"),
+        ("数据建模与分层", "core"),
+        ("实时架构设计", "core"),
+        ("领域加分项", "bonus"),
+        ("工程落地", "core"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_knockout_not_met_caps_match_level_to_low() -> None:
+    settings = Settings(
+        openai_api_key="test-key",
+        openai_base_url="https://api.deepseek.com",
+        text_model="deepseek-v4-flash",
+    )
+    evaluator = OpenAIEvaluator(settings)
+    completions = DeepSeekCompletions()
+    payload = evaluation_payload()
+    payload["background_highlights"] = []
+    payload["criteria"] = [
+        {
+            "criterion_id": "D01",
+            "score": 100,
+            "status": "met",
+            "evidence": [{"text": "Java 经验充分", "location": "段落 1"}],
+        },
+        {
+            "criterion_id": "D02",
+            "score": 10,
+            "status": "not_met",
+            "evidence": [{"text": "仅使用过同步工具", "location": "段落 2"}],
+        },
+    ]
+
+    async def create(**kwargs: Any) -> SimpleNamespace:
+        completions.calls.append(kwargs)
+        message = SimpleNamespace(content=json.dumps(payload, ensure_ascii=False))
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    completions.create = create  # type: ignore[method-assign]
+    evaluator._client = FakeClient(completions)  # type: ignore[assignment]
+
+    result = await evaluator.evaluate(
+        jd_text="招聘实时数据引擎工程师",
+        prompt="### 1. Java 工程能力：80分\n### 2. CDC 引擎（硬性）：20分",
+        resume_text="候选人长期使用数据同步产品。",
+    )
+
+    assert result.overall_score == 82
+    assert result.match_level == "low"
+    assert result.criteria[1].knockout is True
+    assert result.criteria[1].status == "not_met"

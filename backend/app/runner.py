@@ -56,6 +56,8 @@ class ScreeningRunner:
                     if evaluation.status in ACTIVE_EVALUATION_STATUSES:
                         evaluation.status = "failed"
                         evaluation.error = "应用重启导致任务中断，可点击重试"
+                run.completed_count = sum(item.status == "completed" for item in run.evaluations)
+                run.failed_count = sum(item.status == "failed" for item in run.evaluations)
                 session.commit()
 
     def start(self, run_id: str) -> None:
@@ -110,7 +112,7 @@ class ScreeningRunner:
             return bool(run and run.status == "canceled")
 
     def promote_current(self, session: Session, evaluation: Evaluation) -> None:
-        """在同一事务内把评估提升为当前结果，并清掉同简历其他 current。
+        """在同一事务内把评估提升为当前结果，并清掉同简历同岗位的其他 current。
 
         先全部清零并 flush，再点亮目标，避免唯一索引在瞬时双 True 时冲突。
         """
@@ -120,6 +122,7 @@ class ScreeningRunner:
                 select(Evaluation)
                 .where(
                     Evaluation.resume_id == evaluation.resume_id,
+                    Evaluation.job_id == evaluation.job_id,
                     Evaluation.deleted_at.is_(None),
                 )
                 .with_for_update()
@@ -227,6 +230,7 @@ class ScreeningRunner:
                 storage_path = resume.storage_path
                 jd_text = run.jd_snapshot
                 prompt = run.prompt_snapshot
+                scoring_profile = run.scoring_profile_snapshot
 
             if not resume_text:
                 resume_text = await self.processor.extract_text(storage_path)
@@ -261,7 +265,12 @@ class ScreeningRunner:
                 evaluation.status = "evaluating"
                 session.commit()
 
-            result = await self.evaluator.evaluate(jd_text=jd_text, prompt=prompt, resume_text=resume_text)
+            result = await self.evaluator.evaluate(
+                jd_text=jd_text,
+                prompt=prompt,
+                resume_text=resume_text,
+                scoring_profile=scoring_profile,
+            )
 
             with self.session_factory() as session:
                 evaluation = session.get(Evaluation, evaluation_id)
