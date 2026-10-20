@@ -566,3 +566,60 @@ test("职位详情页粘贴文本录入后立即启动评分", async () => {
   // 录入成功后弹窗关闭（created 分支），列表随之刷新
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 });
+
+test("简历池勾选包含解析失败的简历时，提示解析失败而非仍在解析，且解析失败行可重新解析", async () => {
+  let reparseSeen = false;
+  const failedItem = {
+    id: "pool-failed",
+    job_id: null,
+    job_name: null,
+    original_name: "失败简历.pdf",
+    display_name: "Alex 张源",
+    source_title: "测试工程师",
+    mime_type: "pdf",
+    size_bytes: 3000,
+    page_count: 6,
+    parse_status: "failed",
+    parse_error: "第 6 页扫描件 OCR 文本质量不足",
+    source: "email",
+    created_at: "2026-10-12T11:37:31Z",
+    evaluation: null,
+    evaluated_jobs: [],
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/health")) {
+      return new Response(JSON.stringify({ status: "ok", model_configured: true, vision_enabled: false }));
+    }
+    if (url.endsWith("/api/jobs")) {
+      return new Response(JSON.stringify([{ id: "job-1", name: "测试岗位", jd_text: "JD", prompt: "Prompt", resume_count: 0, run_count: 0, created_at: "2026-10-12T00:00:00Z", updated_at: "2026-10-12T00:00:00Z" }]));
+    }
+    if (url.endsWith("/api/pool/resumes?scope=all") || url.endsWith("/api/pool/resumes")) {
+      return new Response(JSON.stringify([failedItem]));
+    }
+    if (url.endsWith("/api/resumes/pool-failed/reparse")) {
+      reparseSeen = true;
+      return new Response(JSON.stringify({ ...failedItem, parse_status: "uploaded" }), { status: 202 });
+    }
+    return new Response(JSON.stringify([]));
+  }));
+
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "打开简历池" }));
+  expect(await screen.findByText("Alex 张源")).toBeInTheDocument();
+  expect(screen.getByText("解析失败")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择Alex 张源" }));
+  expect(await screen.findByText("所选简历包含解析失败项，无法启动评估；请取消勾选失败简历或重新解析。")).toBeInTheDocument();
+
+  const reparseButton = screen.getByRole("button", { name: "重新解析Alex 张源" });
+  expect(reparseButton).toBeInTheDocument();
+  fireEvent.click(reparseButton);
+  await waitFor(() => expect(reparseSeen).toBe(true));
+});

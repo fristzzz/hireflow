@@ -70,7 +70,7 @@ class ResumeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    job_id: str
+    job_id: str | None = None
     original_name: str
     display_name: str
     mime_type: str

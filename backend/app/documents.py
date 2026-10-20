@@ -87,11 +87,19 @@ class DocumentProcessor:
                             f"第 {index} 页视觉识别和本地 OCR 均失败：{vision_error}; {ocr_error}"
                         ) from ocr_error
                 if page_text.strip():
-                    usable, signal_seen = self._has_usable_extracted_text_page(page_text, signal_seen)
-                    if not usable:
-                        raise DocumentError(
-                            f"第 {index} 页扫描件 OCR 文本质量不足，请改用文本型 PDF 或人工修正"
-                        )
+                    if self._is_watermark_or_hash_layer(page_text):
+                        page_text = ""
+                    else:
+                        usable, signal_seen = self._has_usable_extracted_text_page(page_text, signal_seen)
+                        if not usable:
+                            if self._is_watermark_or_hash_layer(embedded_text) or (
+                                signal_seen and len(extracted) > 0 and index == len(embedded_pages)
+                            ):
+                                page_text = ""
+                            else:
+                                raise DocumentError(
+                                    f"第 {index} 页扫描件 OCR 文本质量不足，请改用文本型 PDF 或人工修正"
+                                )
                 else:
                     page_text = ""
             if page_text.strip():

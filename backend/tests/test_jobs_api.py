@@ -427,3 +427,43 @@ def test_upload_pdf_with_watermark_hash_layer_falls_back_to_ocr(tmp_path, monkey
         assert "分布式系统测试经验" in parsed_text.text
 
 
+def test_upload_pdf_with_trailing_watermark_hash_page_succeeds(tmp_path) -> None:
+    """带平台防伪水印散列码尾页的多页 PDF 应成功解析前序正文页并跳过水印页。"""
+
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'test.db'}",
+        data_dir=tmp_path / "data",
+    )
+    app.state.settings.vision_enabled = False
+
+    document = fitz.open()
+    page1 = document.new_page()
+    page1.insert_text((50, 50), "Resume of Alex Zhang. Experience: Senior QA Engineer with 7 years fullstack testing. Education: BS in CS.")
+    page2 = document.new_page()
+    page2.insert_text((72, 72), "7238bbff6427a9021H1_0tm_F1pYxI-3WP2ZWOKimffZMxJj2A~~")
+    content = document.tobytes()
+    document.close()
+
+    with TestClient(app) as client:
+        job = client.post(
+            "/api/jobs",
+            json={"name": "测试工程师", "jd_text": "自动化测试", "prompt": "关注测试架构"},
+        ).json()
+        uploaded = client.post(
+            f"/api/jobs/{job['id']}/resumes",
+            files=[("files", ("测试简历.pdf", content, "application/pdf"))],
+        )
+        assert uploaded.status_code == 201
+        resume_id = uploaded.json()["uploaded"][0]["id"]
+        resume = None
+        for _ in range(50):
+            resume = client.get(f"/api/jobs/{job['id']}/resumes").json()[0]
+            if resume["id"] == resume_id and resume["parse_status"] != "parsing":
+                break
+        assert resume is not None
+        assert resume["parse_status"] == "ready"
+        assert resume["parse_error"] is None
+        parsed_text = client.get(f"/api/resumes/{resume_id}/text")
+        assert parsed_text.status_code == 200
+        assert "Senior QA Engineer" in parsed_text.text
+
