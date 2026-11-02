@@ -113,7 +113,7 @@ Docker Compose 预配置了应用服务与 PostgreSQL 17 数据库，并内置�
 # 1. 复制配置文件
 cp .env.example .env
 
-# 2. 编辑 .env 配置，至少填入 OPENAI_API_KEY
+# 2. 编辑 .env 配置：填入 OPENAI_API_KEY、ADMIN_PASSWORD、SESSION_SECRET
 # 如使用 DeepSeek，配置 OPENAI_BASE_URL=https://api.deepseek.com
 vim .env
 
@@ -121,9 +121,9 @@ vim .env
 docker compose up -d --build
 ```
 
-- 启动后浏览器访问：**`http://127.0.0.1:8000`** 即可开始使用。
+- 启动后浏览器访问：**`http://127.0.0.1:27183`**，首次打开需用管理员账号登录。
 - 首次构建会下载 OCR 模型包，预计耗时 2~3 分钟。
-- 若本机 `8000` 端口已被占用，修改 `.env` 中的 `APP_PORT=8010` 即可映射至其他端口。
+- 默认宿主机端口为非常用端口 `27183`；若被占用，修改 `.env` 中的 `APP_PORT` 即可映射至其他端口。
 
 **启停与数据管理**：
 ```bash
@@ -186,7 +186,10 @@ npm run dev
 | **`MAX_RESUMES_PER_JOB`** | `200` | 单个岗位允许归档的简历数量上限 |
 | **`MODEL_TIMEOUT_SECONDS`**| `120` | 模型单次交互调用超时时间（秒） |
 | **`MODEL_MAX_RETRIES`** | `2` | 模型调用偶发失败时的最大重试次数 |
-| **`APP_PORT`** | `8000` | Docker 暴露的 HTTP 访问端口 |
+| **`APP_PORT`** | `27183` | Docker 暴露的 HTTP 访问端口 |
+| **`ADMIN_USERNAME`** | `admin` | 管理员登录用户名 |
+| **`ADMIN_PASSWORD`** | *必填* | 管理员登录密码（留空应用拒绝启动） |
+| **`SESSION_SECRET`** | *必填* | 会话 Cookie 签名密钥（留空应用拒绝启动） |
 | **`IMAP_HOST`** | *选填*，如 `imap.feishu.cn` | 招聘接收邮箱的 IMAP 服务器地址 |
 | **`IMAP_PORT`** | `993` | IMAP 端口（通常 SSL 为 993） |
 | **`IMAP_USER`** | *选填*，如 `hr@example.com` | 邮箱账号 |

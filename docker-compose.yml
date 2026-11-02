@@ -7,7 +7,7 @@ services:
       DATABASE_URL: postgresql+psycopg://hireflow:hireflow@db:5432/hireflow
       DATA_DIR: /app/data
     ports:
-      - "127.0.0.1:${APP_PORT:-8000}:8000"
+      - "0.0.0.0:${APP_PORT:-27183}:8000"
     volumes:
       - ./data:/app/data
     depends_on:

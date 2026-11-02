@@ -12,17 +12,18 @@
 - `backend/app/` — FastAPI 应用与全部业务逻辑
 - `backend/alembic/versions/` — 数据库迁移
 - `backend/tests/` — pytest 后端测试
-- `frontend/src/` — React 前端（`App.tsx`、`api.ts`、`types.ts`）
+- `frontend/src/` — React 前端（`App.tsx`、`LoginPage.tsx`、`api.ts`、`types.ts`）
 - `data/` — 本地运行数据（uploads、derived、临时 SQLite），不提交
 - `docs/exec-plans/` — 多步骤工作的执行计划（active/ 与 completed/）
 
 ## Entry Points
 - 后端：`uvicorn app.main:app`（`backend/app/main.py`，lifespan 中挂 IMAP 轮询循环与身份提取轮询循环）
 - 前端：`npm run dev` → Vite dev server（`frontend/index.html` → `src/main.tsx`）
-- 生产：`docker compose up --build`（应用 + PostgreSQL，端口由 `APP_PORT` 控制）
+- 生产：`docker compose up --build`（应用 + PostgreSQL，宿主机端口由 `APP_PORT` 控制，默认 27183；访问需管理员登录）
 
 ## Major Components
 - `main.py` — HTTP 路由层（健康检查、邮箱同步、简历池、岗位、简历、评估运行、评审）
+- `auth.py` — 管理员登录/登出/会话校验；`require_auth` 经 `api_router` 保护全部业务接口（豁免 `/api/health` 与 `/api/auth/*`）
 - `documents.py` (`DocumentProcessor`) — PDF/DOCX 解析与预览
 - `evaluator.py` (`Evaluator`) — 调用兼容 OpenAI 的模型进行维度评分；评分协议以此为准
 - `runner.py` (`ScreeningRunner`) — 并发任务隔离与调度
