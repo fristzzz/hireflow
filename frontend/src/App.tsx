@@ -31,6 +31,7 @@ import {
   Inbox,
   ListFilter,
   LoaderCircle,
+  LogOut,
   Pencil,
   Plus,
   RefreshCw,
@@ -43,7 +44,8 @@ import {
   X,
 } from "lucide-react";
 
-import { api } from "./api";
+import { api, setOnUnauthorized } from "./api";
+import LoginPage from "./LoginPage";
 import type { Evaluation, Job, PoolPasteDuplicate, PoolResume, Resume, Run, ScoringDimension, ScoringKind, ScoringPreview, TrashItem, TrashType } from "./types";
 
 const reviewLabels: Record<Evaluation["review_status"], string> = {
@@ -324,14 +326,14 @@ function PasteResumeDialog({ submit, createdMessage, onClose, onCreated }: {
   </form></div>;
 }
 
-function JobList({ onOpen, onTrash, onPool }: { onOpen: (id: string) => void; onTrash: () => void; onPool: () => void }) {
+function JobList({ onOpen, onTrash, onPool, onLogout }: { onOpen: (id: string) => void; onTrash: () => void; onPool: () => void; onLogout: () => void }) {
   const queryClient = useQueryClient();
   const { data: jobs = [], error, isLoading } = useQuery({ queryKey: ["jobs"], queryFn: api.jobs });
   const health = useQuery({ queryKey: ["health"], queryFn: api.health });
   const pool = useQuery({ queryKey: ["pool", "pool"], queryFn: () => api.poolResumes() });
   const poolNewCount = (pool.data || []).filter((item) => !item.evaluation).length;
   const [creating, setCreating] = useState(false);
-  return <main className="landing-shell"><header className="topbar"><div className="brand-mark"><span>HF</span></div><div className="brand-copy"><strong>HireFlow</strong><small>招聘筛选工作台</small></div><div className="topbar-actions"><button className="button quiet" type="button" aria-label="打开简历池" onClick={onPool}><Inbox size={15} />简历池{poolNewCount > 0 && <span className="count-badge">{poolNewCount}</span>}</button><button className="button quiet" type="button" aria-label="打开回收站" onClick={onTrash}><Trash2 size={15} />回收站</button><div className={`health-pill ${health.data?.model_configured ? "ready" : "warn"}`}><span />{health.data?.model_configured ? "模型已连接" : "待配置模型"}</div></div></header>
+  return <main className="landing-shell"><header className="topbar"><div className="brand-mark"><span>HF</span></div><div className="brand-copy"><strong>HireFlow</strong><small>招聘筛选工作台</small></div><div className="topbar-actions"><button className="button quiet" type="button" aria-label="打开简历池" onClick={onPool}><Inbox size={15} />简历池{poolNewCount > 0 && <span className="count-badge">{poolNewCount}</span>}</button><button className="button quiet" type="button" aria-label="打开回收站" onClick={onTrash}><Trash2 size={15} />回收站</button><button className="button quiet" type="button" aria-label="退出登录" onClick={onLogout}><LogOut size={15} />退出登录</button><div className={`health-pill ${health.data?.model_configured ? "ready" : "warn"}`}><span />{health.data?.model_configured ? "模型已连接" : "待配置模型"}</div></div></header>
     <section className="hero"><div><span className="eyebrow">RECRUITMENT INTELLIGENCE / 01</span><h1>把筛选依据<br />留在<span>案卷</span>里。</h1></div><div className="hero-aside"><p>同一标准审阅每一份简历，保留原文证据、当前版本和你的最终判断。</p><button className="button primary" onClick={() => setCreating(true)}><Plus size={17} />创建岗位</button></div></section>
     <section className="jobs-section"><div className="section-heading"><div><span className="section-index">A</span><h2>岗位案卷</h2></div><span>{jobs.length.toString().padStart(2, "0")} 份</span></div><ErrorNotice error={error} />
       {isLoading ? <div className="loading-block"><LoaderCircle className="spin" />正在调取案卷</div> : jobs.length === 0 ? <div className="empty-state"><FolderOpen /><h3>还没有岗位案卷</h3><p>先写下岗位 JD 和你的筛选标准，再放入候选人简历。</p><button className="button primary" onClick={() => setCreating(true)}>创建第一个岗位</button></div> : <div className="job-grid">{jobs.map((job, index) => <button className="job-card" key={job.id} onClick={() => onOpen(job.id)}><div className="job-number">{String(index + 1).padStart(2, "0")}</div><BriefcaseBusiness className="job-icon" /><div className="job-card-body"><span>{job.resume_count} 份简历 · {job.run_count} 次筛选</span><h3>{job.name}</h3><p>{job.jd_text}</p></div><div className="job-card-footer"><span>更新于 {dateLabel(job.updated_at)}</span><ChevronRight /></div></button>)}</div>}
@@ -625,10 +627,24 @@ function JobWorkspace({ jobId, onBack, onTrash }: { jobId: string; onBack: () =>
 }
 
 export default function App() {
+  const [authState, setAuthState] = useState<"checking" | "anonymous" | "authenticated">("checking");
   const [jobId, setJobId] = useState<string | null>(null);
   const [poolOpen, setPoolOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [notices, setNotices] = useState<{ id: number; message: string; kind: NoticeKind }[]>([]);
+  useEffect(() => {
+    setOnUnauthorized(() => setAuthState("anonymous"));
+    api.me()
+      .then(() => setAuthState("authenticated"))
+      .catch(() => setAuthState("anonymous"));
+    return () => setOnUnauthorized(null);
+  }, []);
   const notify: Notify = (message, kind = "success") => { const id = Date.now() + Math.random(); setNotices((items) => [...items, { id, message, kind }]); window.setTimeout(() => setNotices((items) => items.filter((item) => item.id !== id)), 3500); };
-  return <ToastContext.Provider value={notify}>{poolOpen ? <PoolDesk onBack={() => setPoolOpen(false)} /> : trashOpen ? <TrashDesk onBack={() => setTrashOpen(false)} /> : jobId ? <JobWorkspace jobId={jobId} onBack={() => setJobId(null)} onTrash={() => setTrashOpen(true)} /> : <JobList onOpen={setJobId} onTrash={() => setTrashOpen(true)} onPool={() => setPoolOpen(true)} />}<div className="toast-stack" aria-live="polite">{notices.map((notice) => <div className={`toast ${notice.kind}`} key={notice.id}>{notice.kind === "success" ? <Check /> : <CircleAlert />}<span>{notice.message}</span><button aria-label="关闭通知" onClick={() => setNotices((items) => items.filter((item) => item.id !== notice.id))}><X /></button></div>)}</div></ToastContext.Provider>;
+  const handleLogout = async () => {
+    await api.logout().catch(() => undefined);
+    setAuthState("anonymous");
+  };
+  if (authState === "checking") return <div className="full-loading"><LoaderCircle className="spin" />正在检查登录状态</div>;
+  if (authState === "anonymous") return <LoginPage onLoggedIn={() => setAuthState("authenticated")} />;
+  return <ToastContext.Provider value={notify}>{poolOpen ? <PoolDesk onBack={() => setPoolOpen(false)} /> : trashOpen ? <TrashDesk onBack={() => setTrashOpen(false)} /> : jobId ? <JobWorkspace jobId={jobId} onBack={() => setJobId(null)} onTrash={() => setTrashOpen(true)} /> : <JobList onOpen={setJobId} onTrash={() => setTrashOpen(true)} onPool={() => setPoolOpen(true)} onLogout={handleLogout} />}<div className="toast-stack" aria-live="polite">{notices.map((notice) => <div className={`toast ${notice.kind}`} key={notice.id}>{notice.kind === "success" ? <Check /> : <CircleAlert />}<span>{notice.message}</span><button aria-label="关闭通知" onClick={() => setNotices((items) => items.filter((item) => item.id !== notice.id))}><X /></button></div>)}</div></ToastContext.Provider>;
 }

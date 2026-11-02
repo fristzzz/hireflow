@@ -1,7 +1,15 @@
 import type { Evaluation, EvaluationPage, Job, JobPasteResult, PoolAssignResult, PoolPasteResult, PoolResume, Resume, Run, RunPage, ScoringKind, ScoringPreview, TrashPage, TrashType } from "./types";
 
+let unauthorizedHandler: (() => void) | null = null;
+
+/** 注册全局 401 处理器（用于切回登录页）；传 null 表示清除。 */
+export function setOnUnauthorized(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
+  if (response.status === 401) unauthorizedHandler?.();
   if (!response.ok) {
     let message = `请求失败（${response.status}）`;
     try {
@@ -18,6 +26,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 async function requestText(url: string): Promise<string> {
   const response = await fetch(url);
+  if (response.status === 401) unauthorizedHandler?.();
   if (!response.ok) {
     let message = `请求失败（${response.status}）`;
     try {
@@ -38,6 +47,10 @@ const json = (body: unknown): RequestInit => ({
 });
 
 export const api = {
+  login: (payload: { username: string; password: string }) =>
+    request<{ username: string }>("/api/auth/login", json(payload)),
+  logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
+  me: () => request<{ username: string }>("/api/auth/me"),
   health: () => request<{ status: string; model_configured: boolean; text_model: string; vision_model: string; vision_enabled: boolean }>("/api/health"),
   previewScoring: (prompt: string) => request<ScoringPreview>("/api/scoring-preview", json({ prompt })),
   jobs: () => request<Job[]>("/api/jobs"),

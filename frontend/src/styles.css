@@ -90,6 +90,13 @@ input:focus, textarea:focus, select:focus { border-color: var(--rust); box-shado
 .success-note { background: rgba(77,141,99,.09); color: #326245; border-left: 3px solid #4d8d63; }
 .loading-block, .full-loading { min-height: 220px; display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--muted); }
 .full-loading { min-height: 100vh; }
+.auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.auth-card { width: min(420px, 100%); background: var(--paper); border: 1px solid var(--line); box-shadow: var(--shadow); padding: 42px 38px; display: flex; flex-direction: column; gap: 14px; }
+.auth-card h1 { font-size: 30px; margin: 0; }
+.auth-hint { color: var(--muted); font-size: 13px; margin: 0 0 6px; }
+.auth-card label { display: flex; flex-direction: column; gap: 8px; font-size: 12px; font-weight: 700; }
+.auth-error { color: var(--rust); font-size: 13px; margin: 0; }
+.auth-card .button { margin-top: 8px; }
 .spin { animation: spin 1s linear infinite; }
 .workspace-shell { min-height: 100vh; display: grid; grid-template-columns: 290px minmax(0, 1fr); }
 .workspace-rail { position: sticky; top: 0; height: 100vh; padding: 28px 24px; background: var(--ink); color: #edf1e7; display: flex; flex-direction: column; overflow: hidden; }
