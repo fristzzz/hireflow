@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 
 from docx import Document
+from auth_helpers import authed_client
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -46,7 +47,7 @@ def wait(client, run_id):
 
 def test_purging_old_job_preserves_transferred_files(tmp_path):
     app = build_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         old, new = job(client, "旧岗位"), job(client, "新岗位")
         resume_id = upload(client, old)
         assert assign(client, resume_id, new).status_code == 200
@@ -62,7 +63,7 @@ def test_purging_old_job_preserves_transferred_files(tmp_path):
 
 def test_pool_resume_trash_restore_and_purge(tmp_path):
     app = build_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         resume_id = upload(client, job(client, "测试岗位"))
         with app.state.session_factory() as session:
             session.get(Resume, resume_id).job_id = None
@@ -76,7 +77,7 @@ def test_pool_resume_trash_restore_and_purge(tmp_path):
 
 def test_assignment_handles_duplicate_in_trash(tmp_path):
     app = build_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         old, new = job(client, "旧岗位"), job(client, "新岗位")
         resume_id = upload(client, old)
         raw = client.get(f"/api/resumes/{resume_id}/original").content
@@ -90,7 +91,7 @@ def test_assignment_handles_duplicate_in_trash(tmp_path):
 
 def test_assign_then_evaluate_retains_each_jobs_results(tmp_path):
     app = build_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         old, new = job(client, "旧岗位"), job(client, "新岗位")
         resume_id = upload(client, old)
         first = assign(client, resume_id, old, True).json()["run"]
@@ -112,7 +113,7 @@ def test_assign_then_evaluate_retains_each_jobs_results(tmp_path):
 
 def test_recovery_counts_and_pool_pending_status(tmp_path):
     app = build_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         app.state.screening_runner.start = lambda _: None
         job_id = job(client, "测试岗位")
         resume_id = upload(client, job_id)
@@ -133,7 +134,7 @@ def test_migration_backfills_job_results_and_enforces_uniqueness(tmp_path, monke
     from alembic.config import Config
 
     app = build_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         old, new = job(client, "旧岗位"), job(client, "新岗位")
         resume_id = upload(client, old)
         wait(client, assign(client, resume_id, old, True).json()["run"]["id"])
@@ -147,7 +148,7 @@ def test_migration_backfills_job_results_and_enforces_uniqueness(tmp_path, monke
     assert connection.execute("SELECT COUNT(*) FROM evaluations WHERE is_current = 1").fetchone()[0] == 1
     connection.close()
     command.upgrade(config, "head")
-    with TestClient(build_app(tmp_path)) as client:
+    with authed_client(build_app(tmp_path)) as client:
         assert client.get(f"/api/jobs/{old}/evaluations").json()["total"] == 1
         assert client.get(f"/api/jobs/{new}/evaluations").json()["total"] == 1
     connection = sqlite3.connect(tmp_path / "test.db")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from auth_helpers import authed_client
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -53,7 +54,7 @@ def test_paste_creates_resume_and_starts_run(tmp_path) -> None:
     """粘贴创建成功：简历入库就绪、identity_status 为 none，并立即启动只含该简历的评分任务。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client)
         result = client.post(
             f"/api/jobs/{job_id}/resumes/paste",
@@ -95,7 +96,7 @@ def test_paste_creates_resume_and_starts_run(tmp_path) -> None:
 
 def test_paste_rejects_empty_text(tmp_path) -> None:
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client)
         result = client.post(f"/api/jobs/{job_id}/resumes/paste", json={"text": " \r\n\n  "})
         assert result.status_code == 400
@@ -104,14 +105,14 @@ def test_paste_rejects_empty_text(tmp_path) -> None:
 
 def test_paste_unknown_job_returns_404(tmp_path) -> None:
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         result = client.post("/api/jobs/不存在/resumes/paste", json={"text": "任意简历文本"})
         assert result.status_code == 404
 
 
 def test_paste_rejects_when_job_is_full(tmp_path) -> None:
     app = make_app(tmp_path, max_resumes_per_job=1)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client)
         first = client.post(f"/api/jobs/{job_id}/resumes/paste", json={"text": "第一份简历", "confirm": True})
         assert first.json()["created"] is True
@@ -125,7 +126,7 @@ def test_paste_warns_on_duplicate_identity_within_job(tmp_path) -> None:
     """同岗位内邮箱命中疑似重复：不创建也不启动评分；confirm 后才录入。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client)
         client.post(f"/api/jobs/{job_id}/resumes/paste", json={"text": "旧简历，邮箱 dup@example.com", "confirm": True})
 
@@ -151,7 +152,7 @@ def test_paste_duplicate_scope_is_per_job(tmp_path) -> None:
     """身份查重只限本岗位：另一个岗位里的相同邮箱不构成疑似重复。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_a = create_job(client, "岗位 A")
         job_b = create_job(client, "岗位 B")
         client.post(f"/api/jobs/{job_a}/resumes/paste", json={"text": "邮箱 same@example.com", "confirm": True})
@@ -164,7 +165,7 @@ def test_paste_same_content_conflict_even_with_confirm(tmp_path) -> None:
     """内容完全相同（sha256 一致）时 confirm 也不能绕过，避免违反岗位内唯一约束。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client)
         client.post(f"/api/jobs/{job_id}/resumes/paste", json={"text": "完全相同的简历文本"})
         result = client.post(f"/api/jobs/{job_id}/resumes/paste", json={"text": "完全相同的简历文本", "confirm": True})

@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import pymupdf as fitz
+from auth_helpers import authed_client
 from fastapi.testclient import TestClient
 
 from app.documents import DocumentProcessor
@@ -80,7 +81,7 @@ def test_email_sync_imports_attachments_into_pool(tmp_path, monkeypatch) -> None
     )
     app = make_mail_app(tmp_path)
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client, "资深数据架构师")
         result = client.post("/api/email/sync")
 
@@ -105,7 +106,7 @@ def test_email_sync_skips_duplicate_already_in_job(tmp_path, monkeypatch) -> Non
 
     content = make_docx()
     app = make_mail_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client, "资深数据架构师")
         uploaded = client.post(
             f"/api/jobs/{job_id}/resumes",
@@ -133,7 +134,7 @@ def test_email_sync_skips_duplicate_within_pool(tmp_path, monkeypatch) -> None:
     )
     app = make_mail_app(tmp_path)
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         result = client.post("/api/email/sync")
         assert result.json()["imported"] == 1
         assert result.json()["duplicates"] == 1
@@ -150,7 +151,7 @@ def test_email_sync_pdf_goes_through_async_parse(tmp_path, monkeypatch) -> None:
     install_fake_imap(monkeypatch, [make_email("简历", [pdf_attachment("候选人.pdf")])])
     app = make_mail_app(tmp_path)
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         result = client.post("/api/email/sync")
         assert result.json()["imported"] == 1
 
@@ -172,7 +173,7 @@ def test_email_sync_keeps_job_title_from_attachment_filename(tmp_path, monkeypat
     )
     app = make_mail_app(tmp_path)
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         result = client.post("/api/email/sync")
         assert result.json()["imported"] == 1
         item = client.get("/api/pool/resumes").json()[0]
@@ -185,7 +186,7 @@ def test_email_sync_keeps_job_title_from_subject_bracket(tmp_path, monkeypatch) 
     install_fake_imap(monkeypatch, [make_email("【数据架构专家_深圳_35-55K】候选人", [docx_attachment("候选人.docx")])])
     app = make_mail_app(tmp_path)
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         client.post("/api/email/sync")
         item = client.get("/api/pool/resumes").json()[0]
         assert item["source_title"] == "数据架构专家"
@@ -197,7 +198,7 @@ def test_email_sync_without_attachments_marks_message_seen(tmp_path, monkeypatch
     install_fake_imap(monkeypatch, [make_email("普通问候邮件", [])])
     app = make_mail_app(tmp_path)
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         result = client.post("/api/email/sync")
         assert result.json()["skipped"] == 1
         assert result.json()["imported"] == 0
@@ -208,7 +209,7 @@ def test_email_sync_requires_configuration(tmp_path) -> None:
     """未配置 IMAP 时手动同步返回 400，状态接口显示未配置。"""
 
     app = make_mail_app(tmp_path, configured=False)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         response = client.post("/api/email/sync")
         assert response.status_code == 400
         assert client.get("/api/email/status").json()["configured"] is False
@@ -218,7 +219,7 @@ def test_email_status_reports_last_run(tmp_path, monkeypatch) -> None:
     install_fake_imap(monkeypatch, [make_email("简历", [docx_attachment("候选人.docx")])])
     app = make_mail_app(tmp_path)
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         before = client.get("/api/email/status").json()
         assert before["configured"] is True
         assert before["last_result"] is None
@@ -268,7 +269,7 @@ def test_failed_email_remains_unread_and_retries(tmp_path, monkeypatch) -> None:
     """读取邮件不会提前置已读，处理失败后下轮仍能导入。"""
     install_fake_imap(monkeypatch, [make_email("合成测试邮件", [docx_attachment("synthetic.docx")])])
     app = make_mail_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         original = app.state.mail_ingester._process_message
 
         async def fail_once(raw, summary):

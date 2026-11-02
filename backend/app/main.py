@@ -11,7 +11,7 @@ import hashlib
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -264,6 +264,9 @@ def create_app(
         with session_factory() as session:
             yield session
 
+    # 业务接口统一挂会话校验；健康检查与登录接口保持豁免。
+    api_router = APIRouter(dependencies=[Depends(require_auth)])
+
     def sync_result_of(summary) -> EmailSyncResult:
         return EmailSyncResult(
             messages=summary.messages,
@@ -285,7 +288,7 @@ def create_app(
             "model_configured": bool(runtime_settings.openai_api_key),
         }
 
-    @app.get("/api/email/status", response_model=EmailStatusOut)
+    @api_router.get("/api/email/status", response_model=EmailStatusOut)
     def email_status() -> EmailStatusOut:
         last = mail_ingester.last_summary
         return EmailStatusOut(
@@ -296,7 +299,7 @@ def create_app(
             last_result=sync_result_of(last) if last else None,
         )
 
-    @app.post("/api/email/sync", response_model=EmailSyncResult)
+    @api_router.post("/api/email/sync", response_model=EmailSyncResult)
     async def trigger_email_sync() -> EmailSyncResult:
         if not runtime_settings.imap_enabled:
             raise HTTPException(status_code=400, detail="未配置邮箱捕获（IMAP_HOST / IMAP_USER / IMAP_PASSWORD）")
@@ -329,7 +332,7 @@ def create_app(
             evaluated_jobs=evaluated_jobs or [],
         )
 
-    @app.get("/api/pool/resumes", response_model=list[PoolResumeOut])
+    @api_router.get("/api/pool/resumes", response_model=list[PoolResumeOut])
     def list_pool_resumes(
         scope: Literal["pool", "all"] = Query("pool"),
         session: Session = Depends(get_session),
@@ -472,7 +475,7 @@ def create_app(
         session.flush()
         return resume
 
-    @app.post("/api/pool/resumes/paste", response_model=PoolPasteResult)
+    @api_router.post("/api/pool/resumes/paste", response_model=PoolPasteResult)
     def paste_pool_resume(payload: PoolPasteRequest, session: Session = Depends(get_session)) -> PoolPasteResult:
         """把粘贴的简历文本录入简历池；未 confirm 时命中疑似重复则只返回候选列表。"""
 
@@ -488,7 +491,7 @@ def create_app(
         session.commit()
         return PoolPasteResult(created=True, resume=serialize_pool_resume(resume))
 
-    @app.post("/api/jobs/{job_id}/resumes/paste", response_model=JobPasteResult)
+    @api_router.post("/api/jobs/{job_id}/resumes/paste", response_model=JobPasteResult)
     async def paste_job_resume(job_id: str, payload: PoolPasteRequest, session: Session = Depends(get_session)) -> JobPasteResult:
         """在岗位内粘贴简历文本：查重后建行，并立即启动只含该简历的评分任务。"""
 
@@ -524,7 +527,7 @@ def create_app(
         screening_runner.start(run.id)
         return JobPasteResult(created=True, resume=serialize_resume(resume), run=serialize_run(run))
 
-    @app.post("/api/pool/assign", response_model=PoolAssignResult)
+    @api_router.post("/api/pool/assign", response_model=PoolAssignResult)
     async def assign_pool_resumes(payload: PoolAssignRequest, session: Session = Depends(get_session)) -> PoolAssignResult:
         """把简历池中的简历分配到岗位；evaluate=true 时立即为该批启动筛选任务。"""
 
@@ -580,7 +583,7 @@ def create_app(
         )
 
 
-    @app.post("/api/scoring-preview", response_model=ScoringPreviewOut)
+    @api_router.post("/api/scoring-preview", response_model=ScoringPreviewOut)
     def preview_scoring(payload: ScoringPreviewRequest) -> ScoringPreviewOut:
         try:
             rubric = compile_scoring_rubric(payload.prompt)
@@ -600,7 +603,7 @@ def create_app(
             ],
         )
 
-    @app.post("/api/jobs", response_model=JobOut, status_code=status.HTTP_201_CREATED)
+    @api_router.post("/api/jobs", response_model=JobOut, status_code=status.HTTP_201_CREATED)
     def create_job(payload: JobCreate, session: Session = Depends(get_session)) -> JobOut:
         try:
             compile_scoring_dimensions(payload.prompt, payload.scoring_profile)
@@ -611,19 +614,19 @@ def create_app(
         session.commit()
         return serialize_job(session, job)
 
-    @app.get("/api/jobs", response_model=list[JobOut])
+    @api_router.get("/api/jobs", response_model=list[JobOut])
     def list_jobs(session: Session = Depends(get_session)) -> list[JobOut]:
         jobs = session.scalars(select(Job).where(Job.deleted_at.is_(None)).order_by(Job.updated_at.desc())).all()
         return [serialize_job(session, job) for job in jobs]
 
-    @app.get("/api/jobs/{job_id}", response_model=JobOut)
+    @api_router.get("/api/jobs/{job_id}", response_model=JobOut)
     def get_job(job_id: str, session: Session = Depends(get_session)) -> JobOut:
         job = active_job(session, job_id)
         if not job:
             raise HTTPException(status_code=404, detail="岗位不存在")
         return serialize_job(session, job)
 
-    @app.patch("/api/jobs/{job_id}", response_model=JobOut)
+    @api_router.patch("/api/jobs/{job_id}", response_model=JobOut)
     def update_job(job_id: str, payload: JobUpdate, session: Session = Depends(get_session)) -> JobOut:
         job = active_job(session, job_id)
         if not job:
@@ -643,7 +646,7 @@ def create_app(
         session.commit()
         return serialize_job(session, job)
 
-    @app.delete("/api/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+    @api_router.delete("/api/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_job(job_id: str, session: Session = Depends(get_session)) -> None:
         job = active_job(session, job_id)
         if not job:
@@ -654,7 +657,7 @@ def create_app(
         trash_job(job)
         session.commit()
 
-    @app.post("/api/jobs/{job_id}/resumes", response_model=UploadResult, status_code=status.HTTP_201_CREATED)
+    @api_router.post("/api/jobs/{job_id}/resumes", response_model=UploadResult, status_code=status.HTTP_201_CREATED)
     async def upload_resumes(
         job_id: str,
         background_tasks: BackgroundTasks,
@@ -726,7 +729,7 @@ def create_app(
                 rejected.append(UploadRejection(filename=filename, reason="文件处理失败"))
         return UploadResult(uploaded=uploaded, rejected=rejected)
 
-    @app.get("/api/jobs/{job_id}/resumes", response_model=list[ResumeOut])
+    @api_router.get("/api/jobs/{job_id}/resumes", response_model=list[ResumeOut])
     def list_resumes(job_id: str, session: Session = Depends(get_session)) -> list[ResumeOut]:
         if not active_job(session, job_id):
             raise HTTPException(status_code=404, detail="岗位不存在")
@@ -735,7 +738,7 @@ def create_app(
         ).all()
         return [serialize_resume(item) for item in items]
 
-    @app.patch("/api/resumes/{resume_id}", response_model=ResumeOut)
+    @api_router.patch("/api/resumes/{resume_id}", response_model=ResumeOut)
     def update_resume(
         resume_id: str,
         payload: ResumeUpdate,
@@ -758,7 +761,7 @@ def create_app(
         session.commit()
         return serialize_resume(resume)
 
-    @app.post("/api/resumes/{resume_id}/reparse", response_model=ResumeOut, status_code=status.HTTP_202_ACCEPTED)
+    @api_router.post("/api/resumes/{resume_id}/reparse", response_model=ResumeOut, status_code=status.HTTP_202_ACCEPTED)
     async def reparse_resume(
         resume_id: str,
         background_tasks: BackgroundTasks,
@@ -778,7 +781,7 @@ def create_app(
         background_tasks.add_task(parse_uploaded_resume, resume.id)
         return serialize_resume(resume)
 
-    @app.delete("/api/resumes/{resume_id}", status_code=status.HTTP_204_NO_CONTENT)
+    @api_router.delete("/api/resumes/{resume_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_resume(resume_id: str, session: Session = Depends(get_session)) -> None:
         resume = active_resume(session, resume_id)
         if not resume:
@@ -791,14 +794,14 @@ def create_app(
         trash_resume(resume)
         session.commit()
 
-    @app.get("/api/resumes/{resume_id}/original")
+    @api_router.get("/api/resumes/{resume_id}/original")
     def original_resume(resume_id: str, session: Session = Depends(get_session)) -> FileResponse:
         resume = active_resume(session, resume_id)
         if not resume or not Path(resume.storage_path).is_file():
             raise HTTPException(status_code=404, detail="简历原件不存在")
         return FileResponse(resume.storage_path, media_type=resume.mime_type, filename=resume.original_name)
 
-    @app.get("/api/resumes/{resume_id}/preview")
+    @api_router.get("/api/resumes/{resume_id}/preview")
     def preview_resume(resume_id: str, session: Session = Depends(get_session)):
         resume = active_resume(session, resume_id)
         if not resume:
@@ -830,7 +833,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
             )
         raise HTTPException(status_code=404, detail="简历预览不存在")
 
-    @app.get("/api/resumes/{resume_id}/preview/pages/{page_number}")
+    @api_router.get("/api/resumes/{resume_id}/preview/pages/{page_number}")
     def preview_pdf_page(
         resume_id: str,
         page_number: int,
@@ -849,7 +852,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
             headers={"Cache-Control": "private, no-store"},
         )
 
-    @app.get("/api/resumes/{resume_id}/text", response_class=PlainTextResponse)
+    @api_router.get("/api/resumes/{resume_id}/text", response_class=PlainTextResponse)
     def resume_text(
         resume_id: str,
         download: bool = False,
@@ -865,7 +868,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
             headers["Content-Disposition"] = f'attachment; filename="resume-{resume.id}.txt"'
         return PlainTextResponse(resume.parsed_text, headers=headers)
 
-    @app.post("/api/jobs/{job_id}/runs", response_model=RunOut, status_code=status.HTTP_201_CREATED)
+    @api_router.post("/api/jobs/{job_id}/runs", response_model=RunOut, status_code=status.HTTP_201_CREATED)
     async def create_run(job_id: str, payload: RunCreate, session: Session = Depends(get_session)) -> RunOut:
         job = active_job(session, job_id)
         if not job:
@@ -889,7 +892,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         screening_runner.start(run.id)
         return serialize_run(run)
 
-    @app.get("/api/jobs/{job_id}/runs", response_model=RunPage)
+    @api_router.get("/api/jobs/{job_id}/runs", response_model=RunPage)
     def list_runs(
         job_id: str,
         page: int = Query(default=1, ge=1),
@@ -919,14 +922,14 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
             total_pages=(total + page_size - 1) // page_size,
         )
 
-    @app.get("/api/runs/{run_id}", response_model=RunOut)
+    @api_router.get("/api/runs/{run_id}", response_model=RunOut)
     def get_run(run_id: str, session: Session = Depends(get_session)) -> RunOut:
         run = active_run(session, run_id)
         if not run:
             raise HTTPException(status_code=404, detail="筛选运行不存在")
         return serialize_run(run, refresh_counts=True)
 
-    @app.get("/api/runs/{run_id}/evaluations", response_model=list[EvaluationOut])
+    @api_router.get("/api/runs/{run_id}/evaluations", response_model=list[EvaluationOut])
     def list_evaluations(run_id: str, session: Session = Depends(get_session)) -> list[EvaluationOut]:
         if not active_run(session, run_id):
             raise HTTPException(status_code=404, detail="筛选运行不存在")
@@ -940,7 +943,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         ).all()
         return [serialize_evaluation(item) for item in items]
 
-    @app.get("/api/jobs/{job_id}/evaluations", response_model=EvaluationPage)
+    @api_router.get("/api/jobs/{job_id}/evaluations", response_model=EvaluationPage)
     def list_job_evaluations(
         job_id: str,
         page: int = Query(default=1, ge=1),
@@ -1017,7 +1020,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
             total_pages=(total + page_size - 1) // page_size,
         )
 
-    @app.patch("/api/evaluations/{evaluation_id}/review", response_model=EvaluationOut)
+    @api_router.patch("/api/evaluations/{evaluation_id}/review", response_model=EvaluationOut)
     def update_review(evaluation_id: str, payload: ReviewUpdate, session: Session = Depends(get_session)) -> EvaluationOut:
         evaluation = require_active_evaluation(session, evaluation_id)
         evaluation.review_status = payload.status
@@ -1025,7 +1028,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         session.commit()
         return serialize_evaluation(evaluation)
 
-    @app.patch("/api/evaluations/review", response_model=BatchActionResult)
+    @api_router.patch("/api/evaluations/review", response_model=BatchActionResult)
     def batch_update_review(
         payload: BatchReviewUpdate,
         session: Session = Depends(get_session),
@@ -1054,7 +1057,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         session.commit()
         return BatchActionResult(updated_count=len(items))
 
-    @app.post("/api/evaluations/rescore", response_model=RunOut, status_code=status.HTTP_201_CREATED)
+    @api_router.post("/api/evaluations/rescore", response_model=RunOut, status_code=status.HTTP_201_CREATED)
     async def rescore_evaluations(
         payload: RescoreRequest,
         session: Session = Depends(get_session),
@@ -1093,7 +1096,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         screening_runner.start(run.id)
         return serialize_run(run)
 
-    @app.delete("/api/evaluations/{evaluation_id}", status_code=status.HTTP_204_NO_CONTENT)
+    @api_router.delete("/api/evaluations/{evaluation_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_evaluation(evaluation_id: str, session: Session = Depends(get_session)) -> None:
         evaluation = session.get(Evaluation, evaluation_id)
         if not evaluation or evaluation.deleted_at:
@@ -1105,7 +1108,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         trash_evaluation(evaluation)
         session.commit()
 
-    @app.post("/api/evaluations/delete", response_model=BatchActionResult)
+    @api_router.post("/api/evaluations/delete", response_model=BatchActionResult)
     def batch_delete_evaluations(
         payload: EvaluationIds,
         session: Session = Depends(get_session),
@@ -1128,7 +1131,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         session.commit()
         return BatchActionResult(updated_count=len(items))
 
-    @app.post("/api/runs/{run_id}/cancel", response_model=RunOut)
+    @api_router.post("/api/runs/{run_id}/cancel", response_model=RunOut)
     async def cancel_run(run_id: str, session: Session = Depends(get_session)) -> RunOut:
         run = active_run(session, run_id)
         if not run:
@@ -1145,7 +1148,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
             raise HTTPException(status_code=404, detail="筛选运行不存在")
         return serialize_run(run, refresh_counts=True)
 
-    @app.delete("/api/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+    @api_router.delete("/api/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_run(run_id: str, session: Session = Depends(get_session)) -> None:
         run = active_run(session, run_id)
         if not run:
@@ -1155,7 +1158,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         trash_run(run)
         session.commit()
 
-    @app.get("/api/runs/{run_id}/export")
+    @api_router.get("/api/runs/{run_id}/export")
     def export_run(
         run_id: str,
         format: Literal["xlsx", "csv", "json", "md", "docx"] = "xlsx",
@@ -1185,7 +1188,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
             items = [items_by_id[item_id] for item_id in requested_ids]
         return export_response(items, format, f"hireflow-{run_id}")
 
-    @app.get("/api/jobs/{job_id}/export")
+    @api_router.get("/api/jobs/{job_id}/export")
     def export_job(
         job_id: str,
         format: Literal["xlsx", "csv", "json", "md", "docx"] = "xlsx",
@@ -1217,7 +1220,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
             items = [items_by_id[item_id] for item_id in requested_ids]
         return export_response(items, format, f"hireflow-job-{job_id}")
 
-    @app.post("/api/runs/{run_id}/retry-failed", response_model=RunOut)
+    @api_router.post("/api/runs/{run_id}/retry-failed", response_model=RunOut)
     async def retry_failed(run_id: str, session: Session = Depends(get_session)) -> RunOut:
         run = active_run(session, run_id)
         if not run:
@@ -1234,7 +1237,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         screening_runner.start(run_id)
         return serialize_run(run)
 
-    @app.get("/api/trash", response_model=TrashPage)
+    @api_router.get("/api/trash", response_model=TrashPage)
     def list_trash(
         item_type: Literal["all", "job", "resume", "run", "evaluation"] = "all",
         job_id: str | None = None,
@@ -1299,7 +1302,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
             assert isinstance(item, Evaluation)
             restore_evaluation(session, item)
 
-    @app.post("/api/trash/{item_type}/{item_id}/restore")
+    @api_router.post("/api/trash/{item_type}/{item_id}/restore")
     def restore_trash_item(
         item_type: TrashType,
         item_id: str,
@@ -1310,7 +1313,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         session.commit()
         return {"restored": True}
 
-    @app.delete("/api/trash/{item_type}/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+    @api_router.delete("/api/trash/{item_type}/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
     def permanently_delete_trash_item(
         item_type: TrashType,
         item_id: str,
@@ -1320,7 +1323,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         purge_item(session, runtime_settings, item_type, item)
         session.commit()
 
-    @app.post("/api/trash/restore", response_model=BatchActionResult)
+    @api_router.post("/api/trash/restore", response_model=BatchActionResult)
     def batch_restore_trash(
         payload: TrashBatchAction,
         session: Session = Depends(get_session),
@@ -1333,7 +1336,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         session.commit()
         return BatchActionResult(updated_count=restored)
 
-    @app.post("/api/trash/purge", response_model=BatchActionResult)
+    @api_router.post("/api/trash/purge", response_model=BatchActionResult)
     def batch_purge_trash(
         payload: TrashBatchAction,
         session: Session = Depends(get_session),
@@ -1346,7 +1349,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         session.commit()
         return BatchActionResult(updated_count=purged)
 
-    @app.delete("/api/trash", response_model=BatchActionResult)
+    @api_router.delete("/api/trash", response_model=BatchActionResult)
     def empty_trash(session: Session = Depends(get_session)) -> BatchActionResult:
         purged = 0
         for item_type in ("job", "resume", "run", "evaluation"):
@@ -1364,6 +1367,7 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
         return BatchActionResult(updated_count=purged)
 
     app.include_router(auth_router)
+    app.include_router(api_router)
 
     frontend_dist = Path.cwd() / "frontend" / "dist"
     if frontend_dist.is_dir():

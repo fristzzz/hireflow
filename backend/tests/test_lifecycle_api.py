@@ -6,6 +6,7 @@ import time
 from io import BytesIO
 
 from docx import Document
+from auth_helpers import authed_client
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -74,7 +75,7 @@ def create_dossier(client: TestClient) -> tuple[dict, dict]:
 
 def test_resume_soft_delete_restore_and_trash(tmp_path) -> None:
     app = create_app(database_url=f"sqlite:///{tmp_path / 'test.db'}", data_dir=tmp_path / "data")
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job, resume = create_dossier(client)
 
         deleted = client.delete(f"/api/resumes/{resume['id']}")
@@ -93,7 +94,7 @@ def test_resume_soft_delete_restore_and_trash(tmp_path) -> None:
 
 def test_job_delete_is_recoverable_and_permanent_purge_removes_files(tmp_path) -> None:
     app = create_app(database_url=f"sqlite:///{tmp_path / 'test.db'}", data_dir=tmp_path / "data")
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job, resume = create_dossier(client)
         original = client.get(f"/api/resumes/{resume['id']}/original")
         assert original.status_code == 200
@@ -108,7 +109,7 @@ def test_job_delete_is_recoverable_and_permanent_purge_removes_files(tmp_path) -
 
 def test_edit_parsed_text_and_reparse(tmp_path, monkeypatch) -> None:
     app = create_app(database_url=f"sqlite:///{tmp_path / 'test.db'}", data_dir=tmp_path / "data")
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         _, resume = create_dossier(client)
 
         updated = client.patch(
@@ -141,7 +142,7 @@ def test_rescore_replaces_current_result_and_batch_review(tmp_path) -> None:
         data_dir=tmp_path / "data",
         evaluator=evaluator,
     )
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job, resume = create_dossier(client)
         first_run = client.post(
             f"/api/jobs/{job['id']}/runs", json={"resume_ids": [resume["id"]]}
@@ -172,7 +173,7 @@ def test_delete_single_result_does_not_delete_resume(tmp_path) -> None:
         data_dir=tmp_path / "data",
         evaluator=SequencedEvaluator(),
     )
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job, resume = create_dossier(client)
         run = client.post(f"/api/jobs/{job['id']}/runs", json={"resume_ids": [resume["id"]]}).json()
         wait_for_run(client, run["id"])
@@ -191,7 +192,7 @@ def test_resume_delete_cascades_evaluations_and_hides_children_in_trash(tmp_path
         data_dir=tmp_path / "data",
         evaluator=SequencedEvaluator(),
     )
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job, resume = create_dossier(client)
         run = client.post(f"/api/jobs/{job['id']}/runs", json={"resume_ids": [resume["id"]]}).json()
         wait_for_run(client, run["id"])
@@ -216,7 +217,7 @@ def test_job_delete_cascades_and_restore_brings_children_back(tmp_path) -> None:
         data_dir=tmp_path / "data",
         evaluator=SequencedEvaluator(),
     )
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job, resume = create_dossier(client)
         run = client.post(f"/api/jobs/{job['id']}/runs", json={"resume_ids": [resume["id"]]}).json()
         wait_for_run(client, run["id"])
@@ -265,7 +266,7 @@ def test_cancel_run_stays_canceled_even_if_evaluator_finishes_late(tmp_path) -> 
         data_dir=tmp_path / "data",
         evaluator=blocker,
     )
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job, resume = create_dossier(client)
         run = client.post(f"/api/jobs/{job['id']}/runs", json={"resume_ids": [resume["id"]]}).json()
         assert blocker.started.wait(2)
@@ -283,7 +284,7 @@ def test_cancel_run_stays_canceled_even_if_evaluator_finishes_late(tmp_path) -> 
 
 def test_invalid_prompt_weights_rejected_on_create_run(tmp_path) -> None:
     app = create_app(database_url=f"sqlite:///{tmp_path / 'test.db'}", data_dir=tmp_path / "data")
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={
@@ -299,7 +300,7 @@ def test_invalid_prompt_weights_rejected_on_create_run(tmp_path) -> None:
 
 def test_rescore_for_another_job_preserves_source_result(tmp_path) -> None:
     app = create_app(database_url=f"sqlite:///{tmp_path / 'test.db'}", data_dir=tmp_path / "data", evaluator=SequencedEvaluator())
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job, resume = create_dossier(client)
         run = client.post(f"/api/jobs/{job['id']}/runs", json={"resume_ids": [resume['id']]}).json()
         wait_for_run(client, run['id'])

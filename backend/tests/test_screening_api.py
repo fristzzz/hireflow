@@ -7,6 +7,7 @@ import time
 from io import BytesIO
 
 from docx import Document
+from auth_helpers import authed_client
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -57,7 +58,7 @@ def test_screen_resume_and_record_human_review(tmp_path) -> None:
         evaluator=FakeEvaluator(),
     )
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={
@@ -185,7 +186,7 @@ def test_screening_writes_evaluated_name_over_anonymous_filename(tmp_path) -> No
         data_dir=tmp_path / "data",
         evaluator=FakeEvaluator(),
     )
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={

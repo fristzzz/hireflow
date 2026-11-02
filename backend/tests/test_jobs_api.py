@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from auth_helpers import authed_client
 from fastapi.testclient import TestClient
 from docx import Document
 from io import BytesIO
@@ -14,7 +15,7 @@ from app.main import create_app
 def test_create_job_and_read_it_back(tmp_path) -> None:
     app = create_app(database_url=f"sqlite:///{tmp_path / 'test.db'}")
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         response = client.post(
             "/api/jobs",
             json={
@@ -47,7 +48,7 @@ def test_create_job_returns_table_scoring_dimensions(tmp_path) -> None:
 | 工程落地 | 10 |
 """
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         created = client.post(
             "/api/jobs",
             json={"name": "资深数据架构师", "jd_text": "实时数据引擎与 CDC。", "prompt": prompt},
@@ -87,7 +88,7 @@ def test_create_and_update_job_scoring_profile_kinds(tmp_path) -> None:
         {"name": "工程落地", "weight": 10, "kind": "core"},
     ]
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         created = client.post(
             "/api/jobs",
             json={"name": "资深数据架构师", "jd_text": "实时数据引擎。", "prompt": prompt, "scoring_profile": profile},
@@ -109,7 +110,7 @@ def test_create_and_update_job_scoring_profile_kinds(tmp_path) -> None:
 def test_scoring_preview_rejects_unparsed_rubric(tmp_path) -> None:
     app = create_app(database_url=f"sqlite:///{tmp_path / 'test.db'}")
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         preview = client.post(
             "/api/scoring-preview",
             json={"prompt": "评分标准：CDC 30分，建模 70分"},
@@ -131,7 +132,7 @@ def test_upload_docx_and_reject_duplicate(tmp_path) -> None:
     document.save(buffer)
     content = buffer.getvalue()
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={"name": "后端工程师", "jd_text": "Python", "prompt": "关注工程经验"},
@@ -180,7 +181,7 @@ def test_upload_pdf_parses_text_into_database_without_screening(tmp_path, monkey
     content = document.tobytes()
     document.close()
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={"name": "平台工程师", "jd_text": "分布式系统", "prompt": "关注系统经验"},
@@ -228,7 +229,7 @@ def test_upload_text_pdf_prefers_embedded_text_over_ocr(tmp_path, monkeypatch) -
     content = document.tobytes()
     document.close()
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={"name": "数据工程师", "jd_text": "数据平台", "prompt": "关注工程经验"},
@@ -265,7 +266,7 @@ def test_upload_scanned_pdf_falls_back_to_ocr(tmp_path, monkeypatch) -> None:
     content = document.tobytes()
     document.close()
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={"name": "数据工程师", "jd_text": "数据平台", "prompt": "关注工程经验"},
@@ -289,7 +290,7 @@ def test_upload_boss_filename_uses_candidate_name_as_display(tmp_path) -> None:
     buffer = BytesIO()
     document.save(buffer)
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={"name": "后端工程师", "jd_text": "Python", "prompt": "工程能力"},
@@ -327,7 +328,7 @@ def test_upload_garbled_ocr_scan_is_parse_failure(tmp_path, monkeypatch) -> None
     content = document.tobytes()
     document.close()
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={"name": "数据工程师", "jd_text": "数据平台", "prompt": "关注工程经验"},
@@ -362,7 +363,7 @@ def test_upload_pdf_with_trailing_blank_page_succeeds(tmp_path) -> None:
     content = document.tobytes()
     document.close()
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={"name": "数据工程师", "jd_text": "数据平台", "prompt": "关注工程经验"},
@@ -403,7 +404,7 @@ def test_upload_pdf_with_watermark_hash_layer_falls_back_to_ocr(tmp_path, monkey
     content = document.tobytes()
     document.close()
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={"name": "测试工程师", "jd_text": "自动化测试", "prompt": "关注测试架构"},
@@ -444,7 +445,7 @@ def test_upload_pdf_with_trailing_watermark_hash_page_succeeds(tmp_path) -> None
     content = document.tobytes()
     document.close()
 
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job = client.post(
             "/api/jobs",
             json={"name": "测试工程师", "jd_text": "自动化测试", "prompt": "关注测试架构"},

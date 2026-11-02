@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from auth_helpers import authed_client
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -29,7 +30,7 @@ def test_paste_creates_pool_resume(tmp_path) -> None:
     """粘贴文本直接就绪入池：落盘 .txt、规范化文本入库、身份待提取。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         result = client.post(
             "/api/pool/resumes/paste",
             json={"text": "  张三\r\n五年数据平台经验\r\n\r\n\r\n邮箱 zs@example.com  ", "name": "张三"},
@@ -64,7 +65,7 @@ def test_paste_creates_pool_resume(tmp_path) -> None:
 
 def test_paste_rejects_empty_text(tmp_path) -> None:
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         result = client.post("/api/pool/resumes/paste", json={"text": " \r\n\n  "})
         assert result.status_code == 400
         assert pool_items(client) == []
@@ -74,7 +75,7 @@ def test_paste_warns_on_duplicate_identity(tmp_path) -> None:
     """未 confirm 时按邮箱命中疑似重复：返回候选列表且不创建。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         first = client.post(
             "/api/pool/resumes/paste",
             json={"text": "旧简历，邮箱 dup@example.com", "confirm": True},
@@ -98,7 +99,7 @@ def test_paste_warns_on_duplicate_name(tmp_path) -> None:
     """用户填写的姓名命中池内已有简历文本时给出疑似重复提醒。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         client.post("/api/pool/resumes/paste", json={"text": "候选人李雷的简历", "confirm": True})
         result = client.post("/api/pool/resumes/paste", json={"text": "完全不同的经历文本", "name": "李雷"})
         body = result.json()
@@ -109,7 +110,7 @@ def test_paste_warns_on_duplicate_name(tmp_path) -> None:
 
 def test_paste_confirm_creates_despite_duplicate(tmp_path) -> None:
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         client.post("/api/pool/resumes/paste", json={"text": "邮箱 dup@example.com", "confirm": True})
         result = client.post(
             "/api/pool/resumes/paste",
@@ -123,7 +124,7 @@ def test_paste_without_identity_signals_creates_directly(tmp_path) -> None:
     """无邮箱/手机号且未填姓名时无从查重，直接录入。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         client.post("/api/pool/resumes/paste", json={"text": "第一份纯经历文本", "confirm": True})
         result = client.post("/api/pool/resumes/paste", json={"text": "第二份纯经历文本"})
         assert result.json()["created"] is True

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from auth_helpers import authed_client
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -81,7 +82,7 @@ def test_process_pending_identities_marks_ready_and_backfills_name(tmp_path) -> 
     """提取成功置 ready，并按 should_update_display_name 规则补 display_name。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         created = client.post("/api/pool/resumes/paste", json={"text": "张三\n邮箱 zs@example.com"})
         assert created.json()["created"] is True
         resume_id = created.json()["resume"]["id"]
@@ -105,7 +106,7 @@ def test_process_pending_identities_keeps_manual_name(tmp_path) -> None:
     """用户粘贴时填写的姓名是真实姓名，不被模型结果覆盖。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         created = client.post("/api/pool/resumes/paste", json={"text": "工作经历……", "name": "李四"})
         resume_id = created.json()["resume"]["id"]
 
@@ -120,7 +121,7 @@ def test_process_pending_identities_keeps_manual_name(tmp_path) -> None:
 
 def test_process_pending_identities_marks_failed_on_error(tmp_path) -> None:
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         created = client.post("/api/pool/resumes/paste", json={"text": "任意简历文本"})
         resume_id = created.json()["resume"]["id"]
 
@@ -135,7 +136,7 @@ def test_process_pending_identities_skips_unparsed_resume(tmp_path) -> None:
     """解析文本尚未就绪的简历保留 pending，等待下一轮。"""
 
     app = make_app(tmp_path)
-    with TestClient(app):
+    with authed_client(app):
         with app.state.session_factory() as session:
             session.add(
                 Resume(

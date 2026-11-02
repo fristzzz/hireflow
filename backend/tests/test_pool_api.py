@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 
 from docx import Document
+from auth_helpers import authed_client
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -81,7 +82,7 @@ def test_pool_lists_email_resumes_even_after_assignment(tmp_path, monkeypatch) -
     """已分配岗位的邮箱简历仍保留在池中，并带上岗位名与评估摘要。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client)
         entry = ingest_one_email_into_pool(client, monkeypatch)
 
@@ -114,7 +115,7 @@ def test_pool_lists_email_resumes_even_after_assignment(tmp_path, monkeypatch) -
 
 def test_pool_assign_without_evaluate_creates_no_run(tmp_path, monkeypatch) -> None:
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client)
         entry = ingest_one_email_into_pool(client, monkeypatch)
 
@@ -134,7 +135,7 @@ def test_pool_assign_skips_duplicate_in_target_job(tmp_path, monkeypatch) -> Non
 
     content = make_docx()
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client)
 
         from mail_helpers import docx_attachment, install_fake_imap, make_email
@@ -162,7 +163,7 @@ def test_pool_assign_skips_duplicate_in_target_job(tmp_path, monkeypatch) -> Non
 
 def test_pool_assign_rejects_unknown_job(tmp_path, monkeypatch) -> None:
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         entry = ingest_one_email_into_pool(client, monkeypatch)
         result = client.post(
             "/api/pool/assign",
@@ -175,7 +176,7 @@ def test_manually_uploaded_resume_not_in_pool(tmp_path) -> None:
     """手动上传进岗位的简历不属于简历池。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client)
         client.post(
             f"/api/jobs/{job_id}/resumes",
@@ -188,7 +189,7 @@ def test_pool_scope_all_lists_every_resume_with_filters_fields(tmp_path, monkeyp
     """scope=all 返回全库简历（含手动上传），并附评估岗位与候选人年龄、性别。"""
 
     app = make_app(tmp_path)
-    with TestClient(app) as client:
+    with authed_client(app) as client:
         job_id = create_job(client)
         entry = ingest_one_email_into_pool(client, monkeypatch)
         client.post(

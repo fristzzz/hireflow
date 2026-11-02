@@ -127,3 +127,16 @@ def test_expired_cookie_is_rejected(tmp_path: Path) -> None:
             )
         assert response.status_code == 200
         assert client.get("/api/auth/me").status_code == 401
+
+
+def test_business_api_requires_login_and_health_stays_open(tmp_path: Path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        assert client.get("/api/health").status_code == 200
+        assert client.post(
+            "/api/auth/login",
+            json={"username": "any", "password": "any"},
+        ).status_code == 401  # 登录接口本身豁免保护，走凭据校验
+        assert client.get("/api/jobs").status_code == 401
+        assert client.post("/api/jobs", json={}).status_code == 401
+        assert client.get("/api/pool/resumes").status_code == 401
