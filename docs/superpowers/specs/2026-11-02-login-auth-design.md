@@ -84,9 +84,9 @@
 
 ### 部署
 
-1. `docker-compose.yml`：app 端口改为 `0.0.0.0:${APP_PORT:-8000}:8000`，使局域网可访问 `http://192.168.1.39:8000`。
+1. `docker-compose.yml`：app 端口改为 `0.0.0.0:${APP_PORT:-27183}:8000`——宿主机用非常用端口 **27183**（避开 8000/8080/3000 等大众端口，也避开 32768+ 系统临时端口段），容器内部仍为 8000；`APP_PORT` 环境变量可覆盖。局域网访问地址为 `http://192.168.1.39:27183`。
 2. `.env` 新增 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`SESSION_SECRET`（密钥只进 `.env`，不提交）。
-3. 部署流程：SSH 到 `kenny@192.168.1.39` → 同步代码 → `docker compose up -d --build` → 用 curl 验证「未登录 401 → 登录成功 → 携带 Cookie 访问成功」链路。
+3. 部署流程：SSH 到 `kenny@192.168.1.39` → 同步代码 → `docker compose up -d --build` → 用 curl 验证「未登录 401 → 登录成功 → 携带 Cookie 访问成功」链路；部署时顺带确认 27183 在目标机未被占用。
 4. 前置条件：目标机已装 Docker 且从本机可 SSH；当前检查时 `192.168.1.39` 不可达（No route to host），部署步骤需等其可达后执行。
 
 ## 数据迁移影响
