@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import Integer, String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
+from .auth import auth_router, require_auth
 from .config import Settings
 from .database import Base, create_database
 from .documents import DocumentError, DocumentProcessor
@@ -117,6 +118,10 @@ def create_app(
             runtime_settings.data_dir = Path(database_url.removeprefix("sqlite:///")).parent / "data"
     if data_dir:
         runtime_settings.data_dir = data_dir
+    if not runtime_settings.session_secret:
+        raise RuntimeError("SESSION_SECRET 未配置：请在 .env 中设置会话签名密钥")
+    if not runtime_settings.admin_password:
+        raise RuntimeError("ADMIN_PASSWORD 未配置：请在 .env 中设置管理员密码")
     engine, session_factory = create_database(runtime_settings.database_url)
 
     document_processor = DocumentProcessor(runtime_settings)
@@ -1357,6 +1362,8 @@ figcaption{{padding:8px 0;text-align:center}}.empty{{padding:60px 20px;text-alig
             session.flush()
         session.commit()
         return BatchActionResult(updated_count=purged)
+
+    app.include_router(auth_router)
 
     frontend_dist = Path.cwd() / "frontend" / "dist"
     if frontend_dist.is_dir():

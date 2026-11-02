@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     imap_password: str | None = None
     imap_mailbox: str = "INBOX"
     imap_poll_seconds: int = 300
+    admin_username: str = "admin"
+    admin_password: str = ""
+    session_secret: str = ""
+    session_max_age: int = 604800
 
     @property
     def imap_enabled(self) -> bool:

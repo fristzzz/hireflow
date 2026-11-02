@@ -374,3 +374,12 @@ class TrashReference(BaseModel):
 
 class TrashBatchAction(BaseModel):
     items: list[TrashReference] = Field(min_length=1, max_length=200)
+
+
+class AuthLoginRequest(BaseModel):
+    username: str = Field(max_length=200)
+    password: str = Field(max_length=200)
+
+
+class AuthSessionOut(BaseModel):
+    username: str
