@@ -2,10 +2,34 @@ services:
   app:
     build: .
     env_file:
-      - .env
+      # 本地开发时加载 .env；Coolify 等平台通过下方 environment 注入时该文件可缺席
+      - path: .env
+        required: false
     environment:
+      # 数据库与目录为固定值，不进平台变量表
       DATABASE_URL: postgresql+psycopg://hireflow:hireflow@db:5432/hireflow
       DATA_DIR: /app/data
+      # 以下 ${} 引用：本地由 compose 从 .env 插值，Coolify 从其环境变量界面注入
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?}
+      SESSION_SECRET: ${SESSION_SECRET:?}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      TEXT_MODEL: ${TEXT_MODEL:-gpt-4o-mini}
+      VISION_MODEL: ${VISION_MODEL:-gpt-4o-mini}
+      VISION_ENABLED: ${VISION_ENABLED:-true}
+      MAX_CONCURRENCY: ${MAX_CONCURRENCY:-5}
+      MAX_FILE_MB: ${MAX_FILE_MB:-20}
+      MAX_PDF_PAGES: ${MAX_PDF_PAGES:-50}
+      MAX_RESUMES_PER_JOB: ${MAX_RESUMES_PER_JOB:-200}
+      MODEL_TIMEOUT_SECONDS: ${MODEL_TIMEOUT_SECONDS:-120}
+      MODEL_MAX_RETRIES: ${MODEL_MAX_RETRIES:-2}
+      IMAP_HOST: ${IMAP_HOST:-}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_USER: ${IMAP_USER:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      IMAP_MAILBOX: ${IMAP_MAILBOX:-INBOX}
+      IMAP_POLL_SECONDS: ${IMAP_POLL_SECONDS:-300}
     ports:
       - "0.0.0.0:${APP_PORT:-27183}:8000"
     volumes:
