@@ -37,6 +37,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # 镜像内无 curl/wget，用 python 标准库做探针；Coolify 据此显示容器健康状态
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   db:
