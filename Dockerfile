@@ -1,11 +1,12 @@
-FROM node:24-alpine AS frontend-build
+# 国内网络直连 Docker Hub 不稳定，且 Docker 29 的 containerd 镜像存储不读 daemon.json 镜像源，故 FROM 直连加速地址
+FROM docker.m.daocloud.io/library/node:24-alpine AS frontend-build
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM python:3.11-slim AS runtime
+FROM docker.m.daocloud.io/library/python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DATA_DIR=/app/data
